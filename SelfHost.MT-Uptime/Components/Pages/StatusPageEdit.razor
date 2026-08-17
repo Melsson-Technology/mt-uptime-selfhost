@@ -1,0 +1,130 @@
+@page "/status-pages/new"
+@page "/status-pages/{Id:int}/edit"
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = AuthPolicies.Editor)]
+@inject StatusPageService Pages
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject NavigationManager Nav
+
+<PageTitle>@(IsNew ? "New status page" : "Edit status page") — MT-Uptime</PageTitle>
+
+<div class="page-header">
+    <h1>@(IsNew ? "New status page" : "Edit status page")</h1>
+</div>
+
+<EditForm Model="_model" OnValidSubmit="SaveAsync" class="form form-wide">
+    <label>Title <InputText @bind-Value="_model.Title" placeholder="Acme Services" /></label>
+    <label>Slug <InputText @bind-Value="_model.Slug" placeholder="acme (URL: /status/acme)" /></label>
+    <label>Description (optional) <InputText @bind-Value="_model.Description" /></label>
+    <label class="check"><InputCheckbox @bind-Value="_model.Published" /> Published (visible at /status/&lt;slug&gt;)</label>
+
+    <fieldset class="monitor-picker">
+        <legend>Monitors to show</legend>
+        @if (_allMonitors.Count == 0)
+        {
+            <p class="muted">No monitors exist yet.</p>
+        }
+        else
+        {
+            @foreach (var m in _allMonitors)
+            {
+                <label class="check">
+                    <input type="checkbox" checked="@_selected.Contains(m.Id)"
+                           @onchange="e => Toggle(m.Id, (bool)(e.Value ?? false))" />
+                    @m.Name <span class="muted">(@m.Type)</span>
+                </label>
+            }
+        }
+    </fieldset>
+
+    @if (_error is not null)
+    {
+        <div class="alert error">@_error</div>
+    }
+
+    <div class="actions">
+        <button type="submit" class="btn">Save</button>
+        <a href="/status-pages" class="btn-secondary">Cancel</a>
+        @if (!IsNew)
+        {
+            <button type="button" class="btn-danger" @onclick="DeleteAsync">Delete</button>
+        }
+    </div>
+</EditForm>
+
+@code {
+    [Parameter] public int? Id { get; set; }
+    private bool IsNew => Id is null;
+    private readonly Model _model = new();
+    private List<Monitor> _allMonitors = new();
+    private readonly HashSet<int> _selected = new();
+    private string? _error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using (var db = await DbFactory.CreateDbContextAsync())
+            _allMonitors = await db.Monitors.AsNoTracking().OrderBy(m => m.Name).ToListAsync();
+
+        if (Id is int id)
+        {
+            var res = await Pages.GetForEditAsync(id);
+            if (res is null) { Nav.NavigateTo("/status-pages"); return; }
+            _model.Title = res.Value.Page.Title;
+            _model.Slug = res.Value.Page.Slug;
+            _model.Description = res.Value.Page.Description;
+            _model.Published = res.Value.Page.Published;
+            foreach (var mid in res.Value.MonitorIds) _selected.Add(mid);
+        }
+    }
+
+    private void Toggle(int id, bool on)
+    {
+        if (on) _selected.Add(id); else _selected.Remove(id);
+    }
+
+    private async Task SaveAsync()
+    {
+        _error = null;
+        var slug = Slugify(_model.Slug);
+        if (string.IsNullOrWhiteSpace(_model.Title)) { _error = "Title is required."; return; }
+        if (string.IsNullOrWhiteSpace(slug)) { _error = "A valid slug is required (letters, numbers, hyphens)."; return; }
+
+        var ordered = _allMonitors.Where(m => _selected.Contains(m.Id)).Select(m => m.Id).ToList();
+        try
+        {
+            await Pages.SaveAsync(Id, slug, _model.Title.Trim(), NullIfBlank(_model.Description), _model.Published, ordered);
+        }
+        catch (DbUpdateException)
+        {
+            _error = "That slug is already in use — choose another.";
+            return;
+        }
+        Nav.NavigateTo("/status-pages");
+    }
+
+    private async Task DeleteAsync()
+    {
+        if (Id is int id)
+        {
+            await Pages.DeleteAsync(id);
+            Nav.NavigateTo("/status-pages");
+        }
+    }
+
+    private static string Slugify(string? s)
+    {
+        var lowered = (s ?? "").Trim().ToLowerInvariant();
+        var chars = lowered.Select(c => char.IsLetterOrDigit(c) ? c : '-').ToArray();
+        return new string(chars).Trim('-');
+    }
+
+    private static string? NullIfBlank(string? v) => string.IsNullOrWhiteSpace(v) ? null : v.Trim();
+
+    private sealed class Model
+    {
+        public string Title { get; set; } = "";
+        public string Slug { get; set; } = "";
+        public string? Description { get; set; }
+        public bool Published { get; set; }
+    }
+}

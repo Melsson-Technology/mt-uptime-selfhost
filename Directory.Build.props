@@ -1,0 +1,33 @@
+<Project>
+
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <!--
+    Identity and licence, stamped into every assembly so a compiled binary carries its own provenance.
+    AGPL-3.0-or-later: self-hosting is unrestricted, but offering this to others as a hosted service
+    obliges you to publish your modifications.
+  -->
+  <PropertyGroup>
+    <Product>MT-Uptime</Product>
+    <Company>Melsson Technology</Company>
+    <Authors>Melsson Technology</Authors>
+    <Copyright>Copyright (c) 2026 Melsson Technology</Copyright>
+    <PackageLicenseExpression>AGPL-3.0-or-later</PackageLicenseExpression>
+    <PackageProjectUrl>https://git.melssontechnology.com/Melsson-Technology/mt-uptime-selfhost</PackageProjectUrl>
+    <RepositoryUrl>https://git.melssontechnology.com/Melsson-Technology/mt-uptime-selfhost</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+  </PropertyGroup>
+
+  <!--
+    Nothing packs by default. Only opt a project in if it is genuinely meant to be consumed as a library;
+    the host and the test project must never produce a package.
+  -->
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+</Project>

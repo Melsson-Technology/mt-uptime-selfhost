@@ -1,0 +1,42 @@
+@page "/login"
+@attribute [AllowAnonymous]
+
+<PageTitle>Sign in — MT-Uptime</PageTitle>
+
+<div class="auth-card">
+    <div class="auth-brand">
+        <img src="@Assets["img/logo_red_gear.png"]" alt="" class="auth-logo" />
+        <span>MT&#8209;Uptime</span>
+    </div>
+    <h1>Sign in</h1>
+
+    @if (HasError)
+    {
+        <div class="alert error">Invalid username or password.</div>
+    }
+    else if (JustReset)
+    {
+        <div class="alert success">Password updated. Sign in with your new password.</div>
+    }
+
+    <form method="post" action="/auth/login" class="form">
+        <AntiforgeryToken />
+        <input type="hidden" name="returnUrl" value="@ReturnUrl" />
+        <label>Username
+            <input name="username" autocomplete="username" required />
+        </label>
+        <label>Password
+            <input name="password" type="password" autocomplete="current-password" required />
+        </label>
+        <button type="submit" class="btn">Sign in</button>
+    </form>
+    <p class="muted auth-alt"><a href="/forgot-password">Forgot your password?</a></p>
+</div>
+
+@code {
+    [SupplyParameterFromQuery(Name = "error")] public string? Error { get; set; }
+    [SupplyParameterFromQuery(Name = "returnUrl")] public string? ReturnUrl { get; set; }
+    [SupplyParameterFromQuery(Name = "reset")] public string? Reset { get; set; }
+    private bool HasError => !string.IsNullOrEmpty(Error);
+    private bool JustReset => !string.IsNullOrEmpty(Reset);
+}

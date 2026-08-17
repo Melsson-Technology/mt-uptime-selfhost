@@ -1,0 +1,26 @@
+@* Compact inline-SVG heartbeat bar. Statuses are oldest→newest (newest on the right). No JS/CSP concerns. *@
+@if (Statuses.Count > 0)
+{
+    <svg class="hb-bar" width="@Width" height="@Height" viewBox="0 0 @Width @Height"
+         preserveAspectRatio="xMaxYMid meet" role="img" aria-label="Recent status history">
+        @for (var i = 0; i < Statuses.Count; i++)
+        {
+            <rect x="@(i * (BarWidth + Gap))" y="0" width="@BarWidth" height="@Height" rx="1" fill="@StatusDisplay.BarColor(Statuses[i])">
+                @if (Titles is not null && i < Titles.Count)
+                {
+                    <title>@Titles[i]</title>
+                }
+            </rect>
+        }
+    </svg>
+}
+
+@code {
+    [Parameter] public IReadOnlyList<MonitorStatus> Statuses { get; set; } = [];
+    [Parameter] public IReadOnlyList<string>? Titles { get; set; }
+    [Parameter] public int Height { get; set; } = 26;
+    [Parameter] public int BarWidth { get; set; } = 6;
+    [Parameter] public int Gap { get; set; } = 2;
+
+    private int Width => Math.Max(1, Statuses.Count * (BarWidth + Gap) - Gap);
+}

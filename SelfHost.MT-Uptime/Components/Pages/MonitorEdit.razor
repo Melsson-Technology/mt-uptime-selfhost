@@ -1,0 +1,630 @@
+@page "/monitors/new"
+@page "/monitors/{Id:int}/edit"
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = AuthPolicies.Editor)]
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject MonitorSchedulerService Scheduler
+@inject MT.Uptime.Core.Security.ISecretProtector Protector
+@inject NotificationChannelService ChannelService
+@inject MT.Uptime.Core.Tags.TagService TagService
+@inject NavigationManager Nav
+
+<PageTitle>@(IsNew ? "New monitor" : "Edit monitor") — MT-Uptime</PageTitle>
+
+<div class="page-header">
+    <h1>@(IsNew ? "New monitor" : "Edit monitor")</h1>
+</div>
+
+<EditForm Model="_model" OnValidSubmit="SaveAsync" class="form form-wide">
+    <label>Type
+        @if (IsNew)
+        {
+            <InputSelect @bind-Value="_model.Type" @bind-Value:after="OnTypeChanged">
+                <option value="Http">HTTP(S)</option>
+                <option value="Tcp">TCP port</option>
+                <option value="Dns">DNS</option>
+                <option value="MySql">MySQL</option>
+                <option value="Postgres">PostgreSQL</option>
+                <option value="Tls">SSL/TLS cert</option>
+                <option value="Push">Heartbeat / cron (push)</option>
+            </InputSelect>
+        }
+        else
+        {
+            <input value="@TypeLabel(_model.Type)" disabled />
+        }
+    </label>
+
+    <label>Name <InputText @bind-Value="_model.Name" placeholder="(defaults to the target)" /></label>
+
+    @if (_model.Type == MonitorType.Http)
+    {
+        <label>URL <InputText @bind-Value="_model.Url" placeholder="https://example.com/health" /></label>
+        <label>Method
+            <InputSelect @bind-Value="_model.HttpMethod">
+                <option>GET</option><option>HEAD</option><option>POST</option>
+                <option>PUT</option><option>PATCH</option><option>DELETE</option><option>OPTIONS</option>
+            </InputSelect>
+        </label>
+        <label>Accepted status codes <InputText @bind-Value="_model.AcceptedStatusCodes" placeholder="200-299" /></label>
+        <label>Keyword (optional) <InputText @bind-Value="_model.Keyword" /></label>
+        <label class="check"><InputCheckbox @bind-Value="_model.KeywordInverted" /> Fail if keyword <em>is present</em></label>
+        <label class="check"><InputCheckbox @bind-Value="_model.FollowRedirects" /> Follow redirects</label>
+        <label class="check"><InputCheckbox @bind-Value="_model.IgnoreTlsErrors" /> Ignore TLS certificate errors</label>
+
+        <fieldset class="monitor-picker">
+            <legend>Authentication</legend>
+            <p class="muted">
+                For endpoints behind a login. The password or token is <strong>encrypted at rest</strong> and
+                is never shown again once saved.
+            </p>
+            <label>Scheme
+                <InputSelect @bind-Value="_model.HttpAuthMode">
+                    <option value="None">None</option>
+                    <option value="Basic">HTTP Basic</option>
+                    <option value="Bearer">Bearer token</option>
+                </InputSelect>
+            </label>
+            @if (_model.HttpAuthMode == HttpAuthMode.Basic)
+            {
+                <label>Username <InputText @bind-Value="_model.HttpAuthUsername" /></label>
+            }
+            @if (_model.HttpAuthMode != HttpAuthMode.None)
+            {
+                <label>@(_model.HttpAuthMode == HttpAuthMode.Basic ? "Password" : "Token")
+                    <InputText @bind-Value="_model.NewHttpAuthSecret" type="password"
+                               placeholder="@(_hasStoredHttpSecret ? "•••••• stored — leave blank to keep" : "")" />
+                </label>
+            }
+        </fieldset>
+
+        <fieldset class="monitor-picker">
+            <legend>Request</legend>
+            <p class="muted">
+                Headers go one <code>Name: value</code> per line; <code>#</code> starts a comment. Use these for
+                schemes the list above doesn't cover — <code>X-API-Key</code>, a signed token, or a header a WAF
+                expects. They are encrypted at rest too, since this is usually where an API key ends up.
+            </p>
+            <label>Headers
+                <InputTextArea @bind-Value="_model.HttpHeaders" rows="4"
+                               placeholder="X-API-Key: abc123&#10;Accept: application/json" />
+            </label>
+            <label>User-Agent override <InputText @bind-Value="_model.HttpUserAgent"
+                                                  placeholder="@HttpChecker.UserAgent" /></label>
+            <div class="row">
+                <label>Body <InputTextArea @bind-Value="_model.HttpBody" rows="4" placeholder="{ }" /></label>
+                <label>Content-Type <InputText @bind-Value="_model.HttpContentType" placeholder="application/json" /></label>
+            </div>
+        </fieldset>
+    }
+    else if (_model.Type == MonitorType.Tcp)
+    {
+        <div class="row">
+            <label>Host <InputText @bind-Value="_model.Host" placeholder="db.internal" /></label>
+            <label>Port <InputNumber @bind-Value="_model.Port" /></label>
+        </div>
+    }
+    else if (_model.Type == MonitorType.Dns)
+    {
+        <label>Hostname <InputText @bind-Value="_model.Host" placeholder="example.com" /></label>
+        <label>Record type
+            <InputSelect @bind-Value="_model.DnsRecordType">
+                <option>A</option><option>AAAA</option><option>CNAME</option><option>MX</option><option>TXT</option>
+            </InputSelect>
+        </label>
+        <label>Resolver (optional) <InputText @bind-Value="_model.DnsResolver" placeholder="8.8.8.8 (blank = system)" /></label>
+        <label>Expected value (optional) <InputText @bind-Value="_model.DnsExpectedValue" /></label>
+    }
+    else if (_model.Type is MonitorType.MySql or MonitorType.Postgres)
+    {
+        <div class="row">
+            <label>Host <InputText @bind-Value="_model.Host" placeholder="db.internal" /></label>
+            <label>Port <InputNumber @bind-Value="_model.Port" /></label>
+        </div>
+        <label>Database <InputText @bind-Value="_model.Database" /></label>
+        <label>Username <InputText @bind-Value="_model.Username" /></label>
+        <label>Password
+            <InputText @bind-Value="_model.NewPassword" type="password"
+                       placeholder="@(_hasStoredPassword ? "•••••• stored — leave blank to keep" : "")" />
+        </label>
+    }
+    else if (_model.Type == MonitorType.Tls)
+    {
+        <div class="row">
+            <label>Host <InputText @bind-Value="_model.Host" placeholder="example.com" /></label>
+            <label>Port <InputNumber @bind-Value="_model.Port" /></label>
+        </div>
+        <label>Warn when within (days) <InputNumber @bind-Value="_model.WarnDays" /></label>
+    }
+    else if (_model.Type == MonitorType.Push)
+    {
+        <p class="muted">
+            This monitor waits for a <strong>ping</strong> instead of reaching out. Have your cron job, backup
+            script, or scheduled task call the URL below each time it finishes. If a ping doesn't arrive within
+            the expected period (plus the grace below), the monitor goes down and alerts you.
+        </p>
+        <label>Ping URL
+            <span class="ping-url">
+                <input value="@PingUrl" readonly onclick="this.select()" />
+                <button type="button" class="btn-secondary"
+                        onclick="navigator.clipboard.writeText(this.previousElementSibling.value); this.textContent='Copied!'">Copy</button>
+            </span>
+        </label>
+        <p class="muted">e.g. append <code>&amp;&amp; curl -fsS @PingUrl</code> to your job so it pings only on success.</p>
+    }
+
+    <div class="row">
+        @if (_model.Type == MonitorType.Push)
+        {
+            <label>Expected period (s)<InputNumber @bind-Value="_model.IntervalSeconds" /></label>
+            <label>Grace (s)<InputNumber @bind-Value="_model.PushGraceSeconds" /></label>
+        }
+        else
+        {
+            <label>Interval (s)<InputNumber @bind-Value="_model.IntervalSeconds" /></label>
+            <label>Timeout (s)<InputNumber @bind-Value="_model.TimeoutSeconds" /></label>
+            <label>Retries before down<InputNumber @bind-Value="_model.RetryCount" /></label>
+        }
+    </div>
+
+    @if (CadenceWarning is not null)
+    {
+        <div class="alert warn">@CadenceWarning</div>
+    }
+
+    @if (IsActivelyProbed)
+    {
+        <fieldset class="monitor-picker">
+            <legend>Slow-response alerting</legend>
+            <p class="muted">
+                An HTTP 200 that takes eight seconds is still a problem. Set a threshold to flag the monitor
+                as <strong>Slow</strong> when it responds but takes too long. Leave blank (or 0) to turn this off.
+            </p>
+            <div class="row">
+                <label>Slow if over (ms)<InputNumber @bind-Value="_model.SlowThresholdMs" placeholder="blank = off" /></label>
+                <label>Alert after N slow checks<InputNumber @bind-Value="_model.DegradedAfterChecks" /></label>
+            </div>
+            @if (SlowThresholdNote is not null)
+            {
+                <p class="muted">@SlowThresholdNote</p>
+            }
+        </fieldset>
+    }
+
+    <label class="check"><InputCheckbox @bind-Value="_model.Enabled" /> Enabled</label>
+
+    @if (_channels.Count > 0)
+    {
+        <fieldset class="monitor-picker">
+            <legend>Extra notification channels</legend>
+            @foreach (var ch in _channels)
+            {
+                <label class="check">
+                    <input type="checkbox" checked="@_selectedChannels.Contains(ch.Id)"
+                           @onchange="e => ToggleChannel(ch.Id, (bool)(e.Value ?? false))" />
+                    @ch.Name <span class="muted">(@ch.Type)</span>
+                </label>
+            }
+        </fieldset>
+    }
+
+    <fieldset class="monitor-picker">
+        <legend>Tags</legend>
+        <p class="muted">
+            Group monitors by environment, customer or host. Tags drive the dashboard filter, and the
+            dashboard stops being readable somewhere past thirty monitors without them.
+        </p>
+        @if (_tags.Count > 0)
+        {
+            <div class="tag-list">
+                @foreach (var tag in _tags)
+                {
+                    <label class="check">
+                        <input type="checkbox" checked="@_selectedTags.Contains(tag.Id)"
+                               @onchange="e => ToggleTag(tag.Id, (bool)(e.Value ?? false))" />
+                        <span class="tag-chip" style="background-color:@tag.Colour">@tag.Name</span>
+                    </label>
+                }
+            </div>
+        }
+        <div class="row">
+            <label>Add a tag <input @bind="_newTagName" @bind:event="oninput" placeholder="production" /></label>
+            <label>Colour <input type="color" @bind="_newTagColour" /></label>
+            <button type="button" class="btn-secondary" @onclick="AddTagAsync">Add</button>
+        </div>
+    </fieldset>
+
+    @if (_error is not null)
+    {
+        <div class="alert error">@_error</div>
+    }
+
+    <div class="actions">
+        <button type="submit" class="btn">Save</button>
+        <a href="/" class="btn-secondary">Cancel</a>
+        @if (!IsNew)
+        {
+            <button type="button" class="btn-danger" @onclick="DeleteAsync">Delete</button>
+        }
+    </div>
+</EditForm>
+
+@code {
+    [Parameter] public int? Id { get; set; }
+    private bool IsNew => Id is null;
+    private readonly EditModel _model = new();
+    private string? _existingDbPassword; // encrypted; preserved across edits
+    private bool _hasStoredPassword;
+    private string? _existingHttpAuthSecret; // encrypted; preserved across edits
+    private bool _hasStoredHttpSecret;
+    private string? _error;
+    private List<NotificationChannel> _channels = new();
+    private readonly HashSet<int> _selectedChannels = new();
+    private List<Tag> _tags = new();
+    private readonly HashSet<int> _selectedTags = new();
+    private string _newTagName = "";
+    private string _newTagColour = Tag.DefaultColour;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _channels = (await ChannelService.ListAsync()).Where(c => !c.IsDefault).ToList();
+        _tags = await TagService.ListAsync();
+
+        if (Id is int id)
+        {
+            await using var db = await DbFactory.CreateDbContextAsync();
+            var m = await db.Monitors.FirstOrDefaultAsync(x => x.Id == id);
+            if (m is null) { Nav.NavigateTo("/"); return; }
+            LoadFrom(m);
+            foreach (var cid in await ChannelService.GetLinkedChannelIdsAsync(id)) _selectedChannels.Add(cid);
+            foreach (var tid in await TagService.GetTagIdsForMonitorAsync(id)) _selectedTags.Add(tid);
+        }
+    }
+
+    private void ToggleChannel(int id, bool on)
+    {
+        if (on) _selectedChannels.Add(id); else _selectedChannels.Remove(id);
+    }
+
+    private void ToggleTag(int id, bool on)
+    {
+        if (on) _selectedTags.Add(id); else _selectedTags.Remove(id);
+    }
+
+    /// <summary>
+    /// Creates the typed tag (or reuses an existing one of that name) and ticks it. Deliberately applied
+    /// straight away rather than on save: a tag is shared across monitors, so deferring it would mean
+    /// holding a half-made global object in this page's state.
+    /// </summary>
+    private async Task AddTagAsync()
+    {
+        var tag = await TagService.GetOrCreateAsync(_newTagName, _newTagColour);
+        if (tag is null) return;
+
+        _tags = await TagService.ListAsync();
+        _selectedTags.Add(tag.Id);
+        _newTagName = "";
+        _newTagColour = Tag.DefaultColour;
+    }
+
+    private void OnTypeChanged()
+    {
+        _model.Port = _model.Type switch
+        {
+            MonitorType.MySql => 3306,
+            MonitorType.Postgres => 5432,
+            MonitorType.Tls => 443,
+            _ => _model.Port,
+        };
+
+        if (_model.Type == MonitorType.Push && string.IsNullOrEmpty(_model.PushToken))
+            _model.PushToken = PushMonitorManager.NewToken();
+
+        // Give the new type its own cadence, but only when the current value is still an auto-assigned
+        // default — a deliberately typed interval survives switching types around.
+        if (MonitorCadence.IsUntouchedDefault(_model.IntervalSeconds))
+            _model.IntervalSeconds = MonitorCadence.DefaultIntervalFor(_model.Type);
+    }
+
+    private string PingUrl => $"{Nav.BaseUri}{PushMonitorManager.PingPathSegment}/{_model.PushToken}";
+
+    private void LoadFrom(Monitor m)
+    {
+        _model.Type = m.Type;
+        _model.Name = m.Name;
+        _model.IntervalSeconds = m.IntervalSeconds;
+        _model.TimeoutSeconds = m.TimeoutSeconds;
+        _model.RetryCount = m.RetryCount;
+        _model.Enabled = m.Enabled;
+        _model.SlowThresholdMs = m.SlowThresholdMs;
+        _model.DegradedAfterChecks = m.DegradedAfterChecks;
+
+        switch (m.Type)
+        {
+            case MonitorType.Http:
+                var h = Deserialize<HttpMonitorConfig>(m.ConfigJson);
+                _model.Url = h.Url; _model.HttpMethod = h.Method; _model.AcceptedStatusCodes = h.AcceptedStatusCodes;
+                _model.Keyword = h.Keyword; _model.KeywordInverted = h.KeywordInverted;
+                _model.FollowRedirects = h.FollowRedirects; _model.IgnoreTlsErrors = h.IgnoreTlsErrors;
+                _model.HttpAuthMode = h.AuthMode; _model.HttpAuthUsername = h.AuthUsername;
+                _existingHttpAuthSecret = h.AuthSecret; _hasStoredHttpSecret = !string.IsNullOrEmpty(h.AuthSecret);
+                // Headers are redisplayed, unlike the auth secret: most lines are not credentials and
+                // have to stay editable. Reveal() blanks them if the key ring cannot read them, rather
+                // than showing ciphertext the operator would then save back as literal header text.
+                _model.HttpHeaders = Reveal(h.Headers);
+                _model.HttpBody = h.Body; _model.HttpContentType = h.ContentType;
+                _model.HttpUserAgent = h.UserAgent;
+                break;
+            case MonitorType.Tcp:
+                var t = Deserialize<TcpMonitorConfig>(m.ConfigJson);
+                _model.Host = t.Host; _model.Port = t.Port;
+                break;
+            case MonitorType.Dns:
+                var d = Deserialize<DnsMonitorConfig>(m.ConfigJson);
+                _model.Host = d.Hostname; _model.DnsRecordType = d.RecordType;
+                _model.DnsResolver = d.Resolver; _model.DnsExpectedValue = d.ExpectedValue;
+                break;
+            case MonitorType.MySql:
+            case MonitorType.Postgres:
+                var c = Deserialize<DbMonitorConfig>(m.ConfigJson);
+                _model.Host = c.Host; _model.Port = c.Port; _model.Database = c.Database; _model.Username = c.Username;
+                _existingDbPassword = c.Password; _hasStoredPassword = !string.IsNullOrEmpty(c.Password);
+                break;
+            case MonitorType.Tls:
+                var tls = Deserialize<TlsMonitorConfig>(m.ConfigJson);
+                _model.Host = tls.Host; _model.Port = tls.Port; _model.WarnDays = tls.WarnDays;
+                break;
+            case MonitorType.Push:
+                var push = Deserialize<PushMonitorConfig>(m.ConfigJson);
+                _model.PushToken = push.Token; _model.PushGraceSeconds = push.GraceSeconds;
+                break;
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        _error = Validate();
+        if (_error is not null) return;
+
+        var json = BuildConfigJson();
+
+        int monitorId;
+        await using (var db = await DbFactory.CreateDbContextAsync())
+        {
+            Monitor m;
+            if (Id is int id) m = await db.Monitors.FirstAsync(x => x.Id == id);
+            else { m = new Monitor { CreatedAt = DateTime.UtcNow, CurrentStatus = MonitorStatus.Pending }; db.Monitors.Add(m); }
+
+            m.Type = _model.Type;
+            m.Name = string.IsNullOrWhiteSpace(_model.Name) ? DefaultName() : _model.Name.Trim();
+            m.IntervalSeconds = Math.Max(MonitorCadence.MinIntervalSeconds, _model.IntervalSeconds);
+            m.TimeoutSeconds = Math.Clamp(_model.TimeoutSeconds, 1, MonitorCadence.MaxTimeoutSeconds);
+            m.RetryCount = Math.Max(0, _model.RetryCount);
+            m.Enabled = _model.Enabled;
+            // Normalize "off" to null so the engine has a single disabled representation to test for.
+            m.SlowThresholdMs = _model.SlowThresholdMs is > 0 ? _model.SlowThresholdMs : null;
+            m.DegradedAfterChecks = Math.Max(1, _model.DegradedAfterChecks);
+            m.ConfigJson = json;
+            m.UpdatedAt = DateTime.UtcNow;
+            await db.SaveChangesAsync();
+            monitorId = m.Id;
+        }
+
+        await ChannelService.SetMonitorChannelsAsync(monitorId, _selectedChannels.ToList());
+        await TagService.SetMonitorTagsAsync(monitorId, _selectedTags.ToList());
+        await Scheduler.ReloadAsync(monitorId);
+        Nav.NavigateTo("/");
+    }
+
+    private async Task DeleteAsync()
+    {
+        if (Id is not int id) return;
+        await using (var db = await DbFactory.CreateDbContextAsync())
+        {
+            await db.Monitors.Where(x => x.Id == id).ExecuteDeleteAsync();
+        }
+        await Scheduler.RemoveAsync(id);
+        Nav.NavigateTo("/");
+    }
+
+    // Push monitors are passive — nothing is probed, so the cadence guardrails don't apply to them.
+    private bool IsActivelyProbed => _model.Type != MonitorType.Push;
+
+    private string? CadenceWarning
+        => IsActivelyProbed ? MonitorCadence.LowIntervalWarning(_model.IntervalSeconds) : null;
+
+    /// <summary>Spells out what the configured threshold actually means, in plain time units.</summary>
+    private string? SlowThresholdNote
+    {
+        get
+        {
+            if (_model.SlowThresholdMs is not > 0) return null;
+            var after = Math.Max(1, _model.DegradedAfterChecks);
+            var seconds = _model.SlowThresholdMs.Value / 1000d;
+            var span = after * _model.IntervalSeconds;
+            return $"Alerts once {after} check{(after == 1 ? "" : "s")} in a row take longer than "
+                 + $"{seconds:0.##}s — roughly {span}s of sustained slowness at the current interval.";
+        }
+    }
+
+    private string? Validate()
+    {
+        // Cadence first, so an unsafe interval/timeout pair is reported before target-specific problems.
+        if (IsActivelyProbed)
+        {
+            var cadence = MonitorCadence.ValidateCadence(_model.IntervalSeconds, _model.TimeoutSeconds);
+            if (cadence is not null) return cadence;
+
+            var slow = MonitorCadence.ValidateSlowThreshold(_model.SlowThresholdMs, _model.TimeoutSeconds);
+            if (slow is not null) return slow;
+        }
+
+        return ValidateTarget();
+    }
+
+    private string? ValidateTarget() => _model.Type switch
+    {
+        MonitorType.Http => string.IsNullOrWhiteSpace(_model.Url) ? "URL is required." : null,
+        MonitorType.Tcp => string.IsNullOrWhiteSpace(_model.Host) ? "Host is required."
+            : _model.Port is <= 0 or > 65535 ? "A valid port (1-65535) is required." : null,
+        MonitorType.Dns => string.IsNullOrWhiteSpace(_model.Host) ? "Hostname is required." : null,
+        MonitorType.MySql or MonitorType.Postgres => string.IsNullOrWhiteSpace(_model.Host) ? "Host is required." : null,
+        MonitorType.Tls => string.IsNullOrWhiteSpace(_model.Host) ? "Host is required." : null,
+        _ => null,
+    };
+
+    private string BuildConfigJson() => _model.Type switch
+    {
+        MonitorType.Http => Serialize(new HttpMonitorConfig
+        {
+            Url = _model.Url.Trim(),
+            Method = _model.HttpMethod,
+            AcceptedStatusCodes = Blank(_model.AcceptedStatusCodes, "200-299"),
+            Keyword = NullIfBlank(_model.Keyword),
+            KeywordInverted = _model.KeywordInverted,
+            FollowRedirects = _model.FollowRedirects,
+            IgnoreTlsErrors = _model.IgnoreTlsErrors,
+            AuthMode = _model.HttpAuthMode,
+            AuthUsername = _model.HttpAuthMode == HttpAuthMode.Basic ? NullIfBlank(_model.HttpAuthUsername) : null,
+            AuthSecret = ResolveHttpAuthSecret(),
+            Headers = Protect(_model.HttpHeaders),
+            Body = string.IsNullOrWhiteSpace(_model.HttpBody) ? null : _model.HttpBody, // not trimmed — it is a payload
+            ContentType = Blank(_model.HttpContentType, "application/json"),
+            UserAgent = NullIfBlank(_model.HttpUserAgent),
+        }),
+        MonitorType.Tcp => Serialize(new TcpMonitorConfig { Host = _model.Host.Trim(), Port = _model.Port }),
+        MonitorType.Dns => Serialize(new DnsMonitorConfig
+        {
+            Hostname = _model.Host.Trim(),
+            RecordType = _model.DnsRecordType,
+            Resolver = NullIfBlank(_model.DnsResolver),
+            ExpectedValue = NullIfBlank(_model.DnsExpectedValue),
+        }),
+        MonitorType.MySql or MonitorType.Postgres => Serialize(new DbMonitorConfig
+        {
+            Host = _model.Host.Trim(),
+            Port = _model.Port,
+            Database = NullIfBlank(_model.Database),
+            Username = NullIfBlank(_model.Username),
+            Password = ResolvePassword(),
+        }),
+        MonitorType.Tls => Serialize(new TlsMonitorConfig
+        {
+            Host = _model.Host.Trim(),
+            Port = _model.Port > 0 ? _model.Port : 443,
+            WarnDays = _model.WarnDays > 0 ? _model.WarnDays : 14,
+        }),
+        MonitorType.Push => Serialize(new PushMonitorConfig
+        {
+            Token = string.IsNullOrEmpty(_model.PushToken) ? PushMonitorManager.NewToken() : _model.PushToken,
+            GraceSeconds = Math.Max(0, _model.PushGraceSeconds),
+        }),
+        _ => "{}",
+    };
+
+    // New password entered -> encrypt it; otherwise keep the previously stored ciphertext.
+    private string? ResolvePassword()
+        => !string.IsNullOrEmpty(_model.NewPassword) ? Protector.Protect(_model.NewPassword) : _existingDbPassword;
+
+    // Same rule for the HTTP credential, except that switching the scheme back to None drops it —
+    // leaving orphaned ciphertext behind would silently re-authenticate if the scheme were set again.
+    private string? ResolveHttpAuthSecret()
+        => _model.HttpAuthMode == HttpAuthMode.None ? null
+         : !string.IsNullOrEmpty(_model.NewHttpAuthSecret) ? Protector.Protect(_model.NewHttpAuthSecret)
+         : _existingHttpAuthSecret;
+
+    private string? Protect(string? plaintext)
+        => string.IsNullOrWhiteSpace(plaintext) ? null : Protector.Protect(plaintext);
+
+    /// <summary>Decrypts for redisplay, returning null if the key ring cannot read the value.</summary>
+    private string? Reveal(string? cipher)
+    {
+        if (string.IsNullOrEmpty(cipher)) return null;
+        try { return Protector.Unprotect(cipher); }
+        catch { return null; }
+    }
+
+    private string DefaultName() => _model.Type switch
+    {
+        MonitorType.Http => _model.Url.Trim(),
+        MonitorType.Dns => $"DNS {_model.Host}".Trim(),
+        MonitorType.MySql => $"MySQL {_model.Host}".Trim(),
+        MonitorType.Postgres => $"Postgres {_model.Host}".Trim(),
+        MonitorType.Tls => $"TLS {_model.Host}".Trim(),
+        MonitorType.Push => "Heartbeat monitor",
+        _ => $"{_model.Host}:{_model.Port}",
+    };
+
+    private static string TypeLabel(MonitorType t) => t switch
+    {
+        MonitorType.Http => "HTTP(S)",
+        MonitorType.Tcp => "TCP port",
+        MonitorType.Dns => "DNS",
+        MonitorType.MySql => "MySQL",
+        MonitorType.Postgres => "PostgreSQL",
+        MonitorType.Tls => "SSL/TLS cert",
+        MonitorType.Push => "Heartbeat / cron (push)",
+        _ => t.ToString(),
+    };
+
+    private static string Serialize(object cfg) => System.Text.Json.JsonSerializer.Serialize(cfg, cfg.GetType());
+    private static string Blank(string? v, string dflt) => string.IsNullOrWhiteSpace(v) ? dflt : v.Trim();
+    private static string? NullIfBlank(string? v) => string.IsNullOrWhiteSpace(v) ? null : v.Trim();
+
+    private static T Deserialize<T>(string json) where T : new()
+    {
+        try { return System.Text.Json.JsonSerializer.Deserialize<T>(json) ?? new(); }
+        catch { return new(); }
+    }
+
+    private sealed class EditModel
+    {
+        public MonitorType Type { get; set; } = MonitorType.Http;
+        public string Name { get; set; } = "";
+        public int IntervalSeconds { get; set; } = 60;
+        public int TimeoutSeconds { get; set; } = 30;
+        public int RetryCount { get; set; } = 1;
+        public bool Enabled { get; set; } = true;
+
+        // Slow-response alerting (null threshold = off, which is the default for every new monitor).
+        public int? SlowThresholdMs { get; set; }
+        public int DegradedAfterChecks { get; set; } = 3;
+
+        // HTTP
+        public string Url { get; set; } = "";
+        public string HttpMethod { get; set; } = "GET";
+        public string AcceptedStatusCodes { get; set; } = "200-299";
+        public string? Keyword { get; set; }
+        public bool KeywordInverted { get; set; }
+        public bool FollowRedirects { get; set; } = true;
+        public bool IgnoreTlsErrors { get; set; }
+        public HttpAuthMode HttpAuthMode { get; set; } = HttpAuthMode.None;
+        public string? HttpAuthUsername { get; set; }
+        public string? NewHttpAuthSecret { get; set; }
+        public string? HttpHeaders { get; set; }   // plaintext while editing; encrypted on save
+        public string? HttpBody { get; set; }
+        public string? HttpContentType { get; set; } = "application/json";
+        public string? HttpUserAgent { get; set; }
+
+        // TCP / DNS / DB shared host+port
+        public string Host { get; set; } = "";
+        public int Port { get; set; }
+
+        // DNS
+        public string DnsRecordType { get; set; } = "A";
+        public string? DnsResolver { get; set; }
+        public string? DnsExpectedValue { get; set; }
+
+        // DB
+        public string? Database { get; set; }
+        public string? Username { get; set; }
+        public string? NewPassword { get; set; }
+
+        // TLS
+        public int WarnDays { get; set; } = 14;
+
+        // Push / heartbeat
+        public string PushToken { get; set; } = "";
+        public int PushGraceSeconds { get; set; } = 30;
+    }
+}

@@ -1,0 +1,49 @@
+@using System.Globalization
+@using System.Text
+@* Inline-SVG response-time line. Coordinates are formatted with InvariantCulture because SVG
+   requires '.' as the decimal separator regardless of server culture. *@
+@if (_points is not null)
+{
+    <div class="rt-chart">
+        <svg viewBox="0 0 @W @Height" preserveAspectRatio="none" width="100%" height="@Height"
+             role="img" aria-label="Response time over recent checks">
+            <polyline points="@_points" fill="none" stroke="#2f6fed" stroke-width="1.5" vector-effect="non-scaling-stroke" />
+        </svg>
+        <div class="rt-axis"><span>@_maxLabel</span><span>0 ms</span></div>
+    </div>
+}
+else
+{
+    <p class="muted">Not enough response-time data yet.</p>
+}
+
+@code {
+    [Parameter] public IReadOnlyList<Heartbeat> Beats { get; set; } = [];
+    [Parameter] public int Height { get; set; } = 90;
+
+    private const int W = 600;
+    private string? _points;
+    private string _maxLabel = "";
+
+    protected override void OnParametersSet()
+    {
+        var data = Beats.Where(b => b.ResponseTimeMs.HasValue).Select(b => b.ResponseTimeMs!.Value).ToList();
+        if (data.Count < 2) { _points = null; return; }
+
+        var max = Math.Max(1, data.Max());
+        _maxLabel = $"{max:0} ms";
+
+        var n = data.Count;
+        var sb = new StringBuilder();
+        for (var i = 0; i < n; i++)
+        {
+            var x = (double)i / (n - 1) * W;
+            var y = Height - 2 - data[i] / max * (Height - 4);
+            sb.Append(x.ToString("0.#", CultureInfo.InvariantCulture))
+              .Append(',')
+              .Append(y.ToString("0.#", CultureInfo.InvariantCulture))
+              .Append(' ');
+        }
+        _points = sb.ToString().TrimEnd();
+    }
+}

@@ -1,0 +1,289 @@
+@page "/monitors/{Id:int}"
+@rendermode InteractiveServer
+@attribute [Authorize]
+@implements IDisposable
+@using System.Text.Json
+@inject MonitorStatsService Stats
+@inject MonitorStateService State
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject NavigationManager Nav
+
+<PageTitle>@(_monitor?.Name ?? "Monitor") — MT-Uptime</PageTitle>
+
+@if (_notFound)
+{
+    <p class="muted">Monitor not found. <a href="/">Back to dashboard</a>.</p>
+}
+else if (_monitor is null)
+{
+    <p class="muted">Loading…</p>
+}
+else
+{
+    <div class="page-header">
+        <div>
+            <h1><span class="dot @DotClass(_liveStatus)"></span> @_monitor.Name</h1>
+            <p class="muted">@TypeLabel(_monitor.Type)@(string.IsNullOrEmpty(_target) ? "" : $" · {_target}")</p>
+            @if (_tags.Count > 0)
+            {
+                <span class="tag-cell">
+                    @foreach (var tag in _tags)
+                    {
+                        <span class="tag-chip" style="background-color:@tag.Colour">@tag.Name</span>
+                    }
+                </span>
+            }
+        </div>
+        <div class="actions">
+            <a href="/" class="btn-secondary">Back</a>
+            <a href="@($"/monitors/{Id}/edit")" class="btn-secondary">Edit</a>
+        </div>
+    </div>
+
+    <div class="stat-cards">
+        <div class="stat-card">
+            <span class="stat-label">Status</span>
+            <span class="stat-value @StatusClass(_liveStatus)">@StatusText(_liveStatus)</span>
+        </div>
+        <div class="stat-card">
+            <span class="stat-label">Uptime (24h)</span>
+            <span class="stat-value">@Pct(_uptime24)</span>
+        </div>
+        <div class="stat-card">
+            <span class="stat-label">Uptime (30d)</span>
+            <span class="stat-value">@Pct(_uptime30)</span>
+        </div>
+        @if (_monitor.Type == MonitorType.Push)
+        {
+            <div class="stat-card">
+                <span class="stat-label">Last ping</span>
+                <span class="stat-value">@LastPingShort</span>
+            </div>
+        }
+        else
+        {
+            <div class="stat-card">
+                <span class="stat-label">Last response</span>
+                <span class="stat-value">@(_live?.LastResponseMs is { } ms ? $"{ms:0} ms" : "—")</span>
+            </div>
+        }
+        @if (_monitor.CertExpiresAt is { } exp)
+        {
+            <div class="stat-card">
+                <span class="stat-label">Cert expires in</span>
+                <span class="stat-value">@((exp - DateTime.UtcNow).Days) days</span>
+            </div>
+        }
+    </div>
+
+    @if (_monitor.Type == MonitorType.Push)
+    {
+        <section class="panel">
+            <h2>Heartbeat</h2>
+            <div class="push-detail">
+                @if (_pingUrl is not null)
+                {
+                    <span class="ping-url">
+                        <input value="@_pingUrl" readonly onclick="this.select()" />
+                        <button type="button" class="btn-secondary"
+                                onclick="navigator.clipboard.writeText(this.previousElementSibling.value); this.textContent='Copied!'">Copy</button>
+                    </span>
+                }
+                <p class="muted">
+                    Expects a ping every @Humanize(TimeSpan.FromSeconds(_pushPeriod)) (grace @_pushGrace s).
+                    Last ping: @LastPingLong. @NextPingText
+                </p>
+            </div>
+        </section>
+    }
+
+    <section class="panel">
+        <h2>Recent checks</h2>
+        @if (_beatStatuses.Count == 0) { <p class="muted">No checks recorded yet.</p> }
+        else { <HeartbeatBar Statuses="_beatStatuses" Titles="_beatTitles" Height="30" /> }
+    </section>
+
+    @if (_monitor.Type != MonitorType.Push)
+    {
+        <section class="panel">
+            <h2>Response time</h2>
+            <ResponseChart Beats="_beats" />
+        </section>
+    }
+
+    <section class="panel">
+        <h2>Events</h2>
+        @if (_events.Count == 0)
+        {
+            <p class="muted">No incidents recorded.</p>
+        }
+        else
+        {
+            <table class="events">
+                <thead>
+                    <tr><th>When (UTC)</th><th>Change</th><th>Duration</th><th>Reason</th></tr>
+                </thead>
+                <tbody>
+                    @foreach (var e in _events)
+                    {
+                        <tr>
+                            <td>@e.StartedAt.ToString("yyyy-MM-dd HH:mm:ss")</td>
+                            <td>@StatusText(e.FromStatus) → @StatusText(e.ToStatus)</td>
+                            <td>@Duration(e)</td>
+                            <td class="reason">@e.Reason</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+    </section>
+}
+
+@code {
+    [Parameter] public int Id { get; set; }
+
+    private Monitor? _monitor;
+    private List<Tag> _tags = new();
+    private bool _notFound;
+    private int _loadedId = -1;
+
+    private List<Heartbeat> _beats = new();
+    private IReadOnlyList<MonitorStatus> _beatStatuses = [];
+    private IReadOnlyList<string> _beatTitles = [];
+    private double? _uptime24, _uptime30;
+    private List<MonitorEvent> _events = new();
+    private MonitorLiveState? _live;
+    private MonitorStatus _liveStatus;
+    private string _target = "";
+    private string? _pingUrl;
+    private int _pushPeriod, _pushGrace;
+
+    protected override void OnInitialized() => State.Changed += OnChanged;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (Id != _loadedId)
+        {
+            _loadedId = Id;
+            await LoadAsync();
+        }
+    }
+
+    private void OnChanged(int monitorId)
+    {
+        if (monitorId != Id) return;
+        _ = InvokeAsync(async () =>
+        {
+            await LoadAsync();
+            StateHasChanged();
+        });
+    }
+
+    private async Task LoadAsync()
+    {
+        await using (var db = await DbFactory.CreateDbContextAsync())
+        {
+            _monitor = await db.Monitors.AsNoTracking().FirstOrDefaultAsync(m => m.Id == Id);
+            _tags = await db.MonitorTags.AsNoTracking()
+                .Where(mt => mt.MonitorId == Id)
+                .Select(mt => mt.Tag!)
+                .OrderBy(t => t.Name)
+                .ToListAsync();
+        }
+        if (_monitor is null) { _notFound = true; return; }
+        _notFound = false;
+        _target = Describe(_monitor);
+
+        if (_monitor.Type == MonitorType.Push)
+        {
+            var pcfg = TryDeserialize<PushMonitorConfig>(_monitor.ConfigJson);
+            _pushPeriod = _monitor.IntervalSeconds;
+            _pushGrace = pcfg?.GraceSeconds ?? 0;
+            _pingUrl = string.IsNullOrEmpty(pcfg?.Token)
+                ? null
+                : $"{Nav.BaseUri}{PushMonitorManager.PingPathSegment}/{pcfg.Token}";
+        }
+
+        _beats = await Stats.GetRecentHeartbeatsAsync(Id, 60);
+        _beatStatuses = _beats.Select(b => b.Status).ToArray();
+        _beatTitles = _beats
+            .Select(b => $"{StatusText(b.Status)} · {(b.ResponseTimeMs is { } ms ? $"{ms:0}ms · " : "")}{b.Timestamp:HH:mm:ss}")
+            .ToArray();
+        _uptime24 = await Stats.GetUptimeAsync(Id, TimeSpan.FromHours(24));
+        _uptime30 = await Stats.GetUptimeAsync(Id, TimeSpan.FromDays(30));
+        _events = await Stats.GetEventsAsync(Id, 25);
+
+        _live = State.Get(Id);
+        _liveStatus = _live?.Status ?? _monitor.CurrentStatus;
+    }
+
+    private static string Describe(Monitor m)
+    {
+        try
+        {
+            return m.Type switch
+            {
+                MonitorType.Http => JsonSerializer.Deserialize<HttpMonitorConfig>(m.ConfigJson)?.Url ?? "",
+                MonitorType.Tcp => Fmt(JsonSerializer.Deserialize<TcpMonitorConfig>(m.ConfigJson)),
+                MonitorType.Dns => FmtDns(JsonSerializer.Deserialize<DnsMonitorConfig>(m.ConfigJson)),
+                MonitorType.MySql or MonitorType.Postgres => FmtDb(JsonSerializer.Deserialize<DbMonitorConfig>(m.ConfigJson)),
+                _ => "",
+            };
+        }
+        catch { return ""; }
+
+        static string Fmt(TcpMonitorConfig? c) => c is null ? "" : $"{c.Host}:{c.Port}";
+        static string FmtDns(DnsMonitorConfig? c) => c is null ? "" : $"{c.RecordType} {c.Hostname}";
+        static string FmtDb(DbMonitorConfig? c) => c is null ? "" : $"{c.Host}:{c.Port}{(string.IsNullOrEmpty(c.Database) ? "" : "/" + c.Database)}";
+    }
+
+    private static string Duration(MonitorEvent e)
+    {
+        var span = e.ResolvedAt.HasValue
+            ? TimeSpan.FromSeconds(e.DurationSeconds ?? (e.ResolvedAt.Value - e.StartedAt).TotalSeconds)
+            : DateTime.UtcNow - e.StartedAt;
+        return Humanize(span) + (e.ResolvedAt.HasValue ? "" : " (ongoing)");
+    }
+
+    private static string Humanize(TimeSpan t)
+    {
+        if (t.TotalSeconds < 60) return $"{(int)t.TotalSeconds}s";
+        if (t.TotalMinutes < 60) return $"{(int)t.TotalMinutes}m {t.Seconds}s";
+        if (t.TotalHours < 24) return $"{(int)t.TotalHours}h {t.Minutes}m";
+        return $"{(int)t.TotalDays}d {t.Hours}h";
+    }
+
+    private string LastPingShort => _monitor?.LastHeartbeatAt is { } t ? Humanize(DateTime.UtcNow - t) + " ago" : "none yet";
+    private string LastPingLong => _monitor?.LastHeartbeatAt is { } t
+        ? $"{Humanize(DateTime.UtcNow - t)} ago ({t:HH:mm:ss} UTC)"
+        : "none received yet";
+
+    private string NextPingText
+    {
+        get
+        {
+            if (_monitor?.LastHeartbeatAt is not { } t) return "Waiting for the first ping.";
+            var now = DateTime.UtcNow;
+            var due = t.AddSeconds(_pushPeriod);
+            var deadline = due.AddSeconds(_pushGrace);
+            if (now > deadline) return "Currently overdue.";
+            if (now > due) return "Due now (within grace).";
+            return $"Next ping due in {Humanize(due - now)}.";
+        }
+    }
+
+    private static string TypeLabel(MonitorType t) => t == MonitorType.Push ? "Heartbeat" : t.ToString();
+
+    private static T? TryDeserialize<T>(string json) where T : class
+    {
+        try { return JsonSerializer.Deserialize<T>(json); }
+        catch { return null; }
+    }
+
+    private static string Pct(double? v) => v is { } p ? $"{p:0.0}%" : "—";
+    private static string DotClass(MonitorStatus s) => StatusDisplay.DotClass(s);
+    private static string StatusClass(MonitorStatus s) => StatusDisplay.BadgeClass(s);
+    private static string StatusText(MonitorStatus s) => StatusDisplay.Text(s);
+
+    public void Dispose() => State.Changed -= OnChanged;
+}

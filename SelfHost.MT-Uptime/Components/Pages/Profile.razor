@@ -1,0 +1,100 @@
+@page "/profile"
+@attribute [Authorize]
+@inject UserAccountService Users
+@* Static SSR on purpose: changing the username has to re-issue the auth cookie, and SignInAsync cannot
+   run inside an interactive circuit. Both forms post to minimal endpoints, exactly like Login/Setup. *@
+
+<PageTitle>Your profile — MT-Uptime</PageTitle>
+
+<div class="page-header">
+    <h1>Your profile</h1>
+</div>
+
+@if (_user is null)
+{
+    <p class="muted">Account not found.</p>
+}
+else
+{
+    @if (Saved == "profile")
+    {
+        <div class="alert success">Profile updated.</div>
+    }
+    else if (Saved == "password")
+    {
+        <div class="alert success">Password changed.</div>
+    }
+    @if (!string.IsNullOrEmpty(Error))
+    {
+        <div class="alert error">@Error</div>
+    }
+
+    <div class="panel">
+        <h2>Details</h2>
+        <form method="post" action="/auth/profile" class="form">
+            <AntiforgeryToken />
+            <label>Display name
+                <input name="displayName" value="@_user.DisplayName" autocomplete="name"
+                       placeholder="(defaults to your username)" maxlength="256" />
+            </label>
+            <label>Username
+                <input name="username" value="@_user.Username" autocomplete="username" required minlength="3" maxlength="256" />
+            </label>
+            <label>Email
+                <input name="email" value="@_user.Email" type="email" autocomplete="email" maxlength="320"
+                       placeholder="you@example.com" />
+            </label>
+            <p class="muted">
+                Password reset links are sent to this address, so keep it reachable. Delivery also needs
+                SendGrid configured on <a href="/settings">Settings</a>.
+            </p>
+            <button type="submit" class="btn">Save details</button>
+        </form>
+    </div>
+
+    <div class="panel">
+        <h2>Change password</h2>
+        <form method="post" action="/auth/password" class="form">
+            <AntiforgeryToken />
+            <label>Current password
+                <input name="current" type="password" autocomplete="current-password" required />
+            </label>
+            <label>New password
+                <input name="password" type="password" autocomplete="new-password" required minlength="8" />
+            </label>
+            <label>Confirm new password
+                <input name="confirm" type="password" autocomplete="new-password" required minlength="8" />
+            </label>
+            <button type="submit" class="btn">Change password</button>
+        </form>
+    </div>
+
+    <div class="panel">
+        <h2>Account</h2>
+        <p class="muted">
+            Created @_user.CreatedAt.ToString("yyyy-MM-dd HH:mm 'UTC'").
+            @if (_user.LastLoginAt is { } last)
+            {
+                <text> Last signed in @last.ToString("yyyy-MM-dd HH:mm 'UTC'").</text>
+            }
+        </p>
+    </div>
+}
+
+@code {
+    [SupplyParameterFromQuery(Name = "saved")] public string? Saved { get; set; }
+    [SupplyParameterFromQuery(Name = "error")] public string? Error { get; set; }
+    [CascadingParameter] private Task<AuthenticationState>? AuthState { get; set; }
+
+    private AppUser? _user;
+
+    // Render the signed-in account, not "the first user row" — same thing with one account, but the
+    // page must never show one user their colleague's details once there is more than one.
+    protected override async Task OnInitializedAsync()
+    {
+        if (AuthState is null) return;
+        var principal = (await AuthState).User;
+        var id = principal.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+        if (int.TryParse(id, out var userId)) _user = await Users.GetByIdAsync(userId);
+    }
+}

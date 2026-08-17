@@ -1,0 +1,41 @@
+@page "/denied"
+@*
+    Shown when a signed-in user reaches a page their role does not cover.
+
+    Routable as well as embeddable, because the two ways of being refused arrive differently: Blazor pages
+    render this through Routes.razor's NotAuthorized slot, while the /admin/* minimal-API endpoints are
+    refused by the cookie handler, which can only redirect — so it needs a URL to redirect to.
+
+    Before roles existed, NotAuthorized could only mean "not signed in", so Routes.razor sent every case
+    to RedirectToLogin. That is wrong for a Viewer who is already authenticated: they would be bounced to
+    a login page they have no way to satisfy — the credentials they hold are not the problem — and login
+    would send them straight back. Distinguishing the two cases is what makes a role denial legible.
+*@
+<div class="page-header">
+    <h1>Not available to your account</h1>
+</div>
+
+<p class="muted">
+    You're signed in as <strong>@_name</strong>@(_role is null ? "" : $" ({_role})"), and this page needs a
+    higher level of access. If you need it, ask an administrator of this instance to change your role.
+</p>
+
+<div class="actions">
+    <a href="/" class="btn">Back to the dashboard</a>
+</div>
+
+@code {
+    [CascadingParameter] private Task<AuthenticationState>? AuthState { get; set; }
+
+    private string _name = "this account";
+    private string? _role;
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (AuthState is null) return;
+
+        var user = (await AuthState).User;
+        if (user.Identity?.Name is { Length: > 0 } n) _name = n;
+        _role = user.FindFirst(System.Security.Claims.ClaimTypes.Role)?.Value;
+    }
+}

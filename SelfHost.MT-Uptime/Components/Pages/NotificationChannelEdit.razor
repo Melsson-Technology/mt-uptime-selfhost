@@ -1,0 +1,252 @@
+@page "/channels/new"
+@page "/channels/{Id:int}/edit"
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = AuthPolicies.Editor)]
+@using System.Text.Json
+@inject NotificationChannelService Channels
+@inject MT.Uptime.Core.Security.ISecretProtector Protector
+@inject IEnumerable<INotificationChannel> Impls
+@inject NavigationManager Nav
+
+<PageTitle>@(IsNew ? "New channel" : "Edit channel") — MT-Uptime</PageTitle>
+
+<div class="page-header">
+    <h1>@(IsNew ? "New notification channel" : "Edit notification channel")</h1>
+</div>
+
+<EditForm Model="_model" OnValidSubmit="SaveAsync" class="form form-wide">
+    <label>Type
+        @if (IsNew)
+        {
+            <InputSelect @bind-Value="_model.Type">
+                <option value="Slack">Slack</option>
+                <option value="Discord">Discord</option>
+                <option value="Teams">Microsoft Teams</option>
+                <option value="Telegram">Telegram</option>
+                <option value="Ntfy">ntfy</option>
+                <option value="Gotify">Gotify</option>
+                <option value="PagerDuty">PagerDuty</option>
+                <option value="Webhook">Webhook</option>
+            </InputSelect>
+        }
+        else
+        {
+            <input value="@_model.Type" disabled />
+        }
+    </label>
+
+    <label>Name <InputText @bind-Value="_model.Name" placeholder="Ops Slack" /></label>
+
+    <label>@SecretLabel
+        <InputText @bind-Value="_model.NewSecret" type="password"
+                   placeholder="@(_hasSecret ? "•••••• stored — leave blank to keep" : SecretPlaceholder)" />
+    </label>
+
+    @if (_model.Type == NotificationChannelType.Telegram)
+    {
+        <label>Chat ID <InputText @bind-Value="_model.ChatId" placeholder="-1001234567890" /></label>
+    }
+    else if (_model.Type == NotificationChannelType.Gotify)
+    {
+        <label>Server URL <InputText @bind-Value="_model.ServerUrl" placeholder="https://gotify.example.com" /></label>
+    }
+    else if (_model.Type == NotificationChannelType.Ntfy)
+    {
+        <label>Access token (optional)
+            <InputText @bind-Value="_model.NewExtraSecret" type="password"
+                       placeholder="@(_hasExtraSecret ? "•••••• stored — leave blank to keep" : "only if your ntfy server requires auth")" />
+        </label>
+    }
+    else if (_model.Type == NotificationChannelType.PagerDuty)
+    {
+        <p class="muted">
+            A recovery <strong>resolves</strong> the PagerDuty incident rather than raising a second one,
+            so on-call stops being paged as soon as the monitor comes back. Repeat-while-down alerts are
+            deduplicated against the same incident.
+        </p>
+    }
+
+    <label class="check"><InputCheckbox @bind-Value="_model.IsDefault" /> Apply to all monitors (default channel)</label>
+    <label class="check"><InputCheckbox @bind-Value="_model.Enabled" /> Enabled</label>
+
+    @if (_message is not null)
+    {
+        <div class="alert @(_ok ? "success" : "error")">@_message</div>
+    }
+
+    <div class="actions">
+        <button type="submit" class="btn">Save</button>
+        <button type="button" class="btn-secondary" @onclick="TestAsync" disabled="@_busy">Send test</button>
+        <a href="/channels" class="btn-secondary">Cancel</a>
+        @if (!IsNew)
+        {
+            <button type="button" class="btn-danger" @onclick="DeleteAsync">Delete</button>
+        }
+    </div>
+</EditForm>
+
+@code {
+    [Parameter] public int? Id { get; set; }
+    private bool IsNew => Id is null;
+    private readonly Model _model = new();
+    private string? _existingSecret; // encrypted ciphertext
+    private bool _hasSecret;
+    private string? _existingExtraSecret; // encrypted; only ntfy's optional access token uses this today
+    private bool _hasExtraSecret;
+    private bool _ok;
+    private bool _busy;
+    private string? _message;
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (Id is int id)
+        {
+            var c = await Channels.GetAsync(id);
+            if (c is null) { Nav.NavigateTo("/channels"); return; }
+            _model.Type = c.Type;
+            _model.Name = c.Name;
+            _model.Enabled = c.Enabled;
+            _model.IsDefault = c.IsDefault;
+            LoadConfig(c.Type, c.ConfigJson);
+        }
+    }
+
+    private void LoadConfig(NotificationChannelType type, string json)
+    {
+        try
+        {
+            switch (type)
+            {
+                case NotificationChannelType.Slack:
+                    _existingSecret = JsonSerializer.Deserialize<SlackChannelConfig>(json)?.WebhookUrl;
+                    break;
+                case NotificationChannelType.Webhook:
+                    _existingSecret = JsonSerializer.Deserialize<WebhookChannelConfig>(json)?.Url;
+                    break;
+                case NotificationChannelType.Telegram:
+                    var t = JsonSerializer.Deserialize<TelegramChannelConfig>(json);
+                    _existingSecret = t?.BotToken;
+                    _model.ChatId = t?.ChatId;
+                    break;
+                case NotificationChannelType.Discord:
+                    _existingSecret = JsonSerializer.Deserialize<DiscordChannelConfig>(json)?.WebhookUrl;
+                    break;
+                case NotificationChannelType.Teams:
+                    _existingSecret = JsonSerializer.Deserialize<TeamsChannelConfig>(json)?.WebhookUrl;
+                    break;
+                case NotificationChannelType.Ntfy:
+                    var n = JsonSerializer.Deserialize<NtfyChannelConfig>(json);
+                    _existingSecret = n?.TopicUrl;
+                    _existingExtraSecret = n?.AccessToken;
+                    break;
+                case NotificationChannelType.Gotify:
+                    var g = JsonSerializer.Deserialize<GotifyChannelConfig>(json);
+                    _existingSecret = g?.AppToken;
+                    _model.ServerUrl = g?.ServerUrl;
+                    break;
+                case NotificationChannelType.PagerDuty:
+                    _existingSecret = JsonSerializer.Deserialize<PagerDutyChannelConfig>(json)?.RoutingKey;
+                    break;
+            }
+        }
+        catch { /* ignore malformed config */ }
+        _hasSecret = !string.IsNullOrEmpty(_existingSecret);
+        _hasExtraSecret = !string.IsNullOrEmpty(_existingExtraSecret);
+    }
+
+    private string BuildConfigJson()
+    {
+        var secret = !string.IsNullOrEmpty(_model.NewSecret) ? Protector.Protect(_model.NewSecret) : _existingSecret;
+        var extra = !string.IsNullOrEmpty(_model.NewExtraSecret)
+            ? Protector.Protect(_model.NewExtraSecret)
+            : _existingExtraSecret;
+
+        object cfg = _model.Type switch
+        {
+            NotificationChannelType.Slack => new SlackChannelConfig { WebhookUrl = secret },
+            NotificationChannelType.Webhook => new WebhookChannelConfig { Url = secret },
+            NotificationChannelType.Telegram => new TelegramChannelConfig { BotToken = secret, ChatId = NullIfBlank(_model.ChatId) },
+            NotificationChannelType.Discord => new DiscordChannelConfig { WebhookUrl = secret },
+            NotificationChannelType.Teams => new TeamsChannelConfig { WebhookUrl = secret },
+            NotificationChannelType.Ntfy => new NtfyChannelConfig { TopicUrl = secret, AccessToken = extra },
+            NotificationChannelType.Gotify => new GotifyChannelConfig { AppToken = secret, ServerUrl = NullIfBlank(_model.ServerUrl) },
+            NotificationChannelType.PagerDuty => new PagerDutyChannelConfig { RoutingKey = secret },
+            _ => new object(),
+        };
+        return JsonSerializer.Serialize(cfg, cfg.GetType());
+    }
+
+    private async Task SaveAsync()
+    {
+        _message = null;
+        if (string.IsNullOrWhiteSpace(_model.Name)) { _ok = false; _message = "Name is required."; return; }
+        await Channels.SaveAsync(Id, _model.Name.Trim(), _model.Type, BuildConfigJson(), _model.Enabled, _model.IsDefault);
+        Nav.NavigateTo("/channels");
+    }
+
+    private async Task TestAsync()
+    {
+        _message = null;
+        _busy = true;
+        try
+        {
+            var impl = Impls.FirstOrDefault(c => c.Type == _model.Type);
+            if (impl is null) { _ok = false; _message = "No implementation for this channel type."; return; }
+
+            var evt = new NotificationEvent(0, "Test notification", MonitorStatus.Up, MonitorStatus.Down,
+                DateTime.UtcNow, "MT-Uptime channel test.", null, NotifyKind.Up);
+            var ok = await impl.SendAsync(evt, BuildConfigJson(), CancellationToken.None);
+            _ok = ok;
+            _message = ok ? "Test sent." : "Send failed — check the URL/token and the logs.";
+        }
+        catch (Exception ex) { _ok = false; _message = "Error: " + ex.Message; }
+        finally { _busy = false; }
+    }
+
+    private async Task DeleteAsync()
+    {
+        if (Id is int id) { await Channels.DeleteAsync(id); Nav.NavigateTo("/channels"); }
+    }
+
+    private string SecretLabel => _model.Type switch
+    {
+        NotificationChannelType.Slack => "Slack webhook URL",
+        NotificationChannelType.Webhook => "Target URL",
+        NotificationChannelType.Telegram => "Bot token",
+        NotificationChannelType.Discord => "Discord webhook URL",
+        NotificationChannelType.Teams => "Teams webhook URL",
+        NotificationChannelType.Ntfy => "Topic URL",
+        NotificationChannelType.Gotify => "Application token",
+        NotificationChannelType.PagerDuty => "Integration (routing) key",
+        _ => "Secret",
+    };
+
+    private string SecretPlaceholder => _model.Type switch
+    {
+        NotificationChannelType.Slack => "https://hooks.slack.com/services/...",
+        NotificationChannelType.Webhook => "https://example.com/hook",
+        NotificationChannelType.Telegram => "123456:ABC-DEF...",
+        NotificationChannelType.Discord => "https://discord.com/api/webhooks/...",
+        // A Power Automate "Workflows" URL. The older Office 365 connector URLs still work for now, but
+        // Microsoft is retiring them, so the placeholder points at the one that will survive.
+        NotificationChannelType.Teams => "https://prod-00.westeurope.logic.azure.com:443/workflows/...",
+        NotificationChannelType.Ntfy => "https://ntfy.sh/your-topic",
+        NotificationChannelType.Gotify => "A1b2C3d4E5f6...",
+        NotificationChannelType.PagerDuty => "32-character integration key",
+        _ => "",
+    };
+
+    private static string? NullIfBlank(string? v) => string.IsNullOrWhiteSpace(v) ? null : v.Trim();
+
+    private sealed class Model
+    {
+        public NotificationChannelType Type { get; set; } = NotificationChannelType.Slack;
+        public string Name { get; set; } = "";
+        public bool Enabled { get; set; } = true;
+        public bool IsDefault { get; set; }
+        public string? NewSecret { get; set; }
+        public string? NewExtraSecret { get; set; }
+        public string? ChatId { get; set; }
+        public string? ServerUrl { get; set; }
+    }
+}

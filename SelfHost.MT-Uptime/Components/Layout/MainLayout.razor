@@ -1,0 +1,45 @@
+@inherits LayoutComponentBase
+
+<div class="layout">
+    <header class="topbar">
+        <a href="/" class="brand"><img src="@Assets["img/logo_red_gear.png"]" alt="" class="brand-logo" />MT&#8209;Uptime</a>
+        <AuthorizeView>
+            <Authorized>
+                @* Presentation only. Hiding a link a role cannot use keeps the nav honest, but the page's
+                   own [Authorize(Policy = …)] is what actually enforces it — anyone can type a URL. *@
+                <nav class="nav">
+                    <a href="/">Dashboard</a>
+                    @* Readable by any signed-in account — acknowledging is what needs Editor, and the
+                       page gates those buttons itself. *@
+                    <a href="/incidents">Incidents</a>
+                    <AuthorizeView Policy="@AuthPolicies.Editor" Context="editor">
+                        <a href="/status-pages">Status pages</a>
+                        <a href="/channels">Channels</a>
+                        <a href="/maintenance">Maintenance</a>
+                        <a href="/tags">Tags</a>
+                    </AuthorizeView>
+                    <AuthorizeView Policy="@AuthPolicies.Admin" Context="admin">
+                        <a href="/users">Users</a>
+                        <a href="/settings">Settings</a>
+                    </AuthorizeView>
+                </nav>
+                <div class="user">
+                    <a href="/profile" class="username" title="Your profile">@context.User.Identity?.Name</a>
+                    <form method="post" action="/auth/logout" data-enhance="false" class="logout-form">
+                        <AntiforgeryToken />
+                        <button type="submit" class="btn-link">Log out</button>
+                    </form>
+                </div>
+            </Authorized>
+        </AuthorizeView>
+    </header>
+    <main class="content">
+        @Body
+    </main>
+</div>
+
+<div id="blazor-error-ui" data-nosnippet>
+    An unhandled error has occurred.
+    <a href="." class="reload">Reload</a>
+    <span class="dismiss">🗙</span>
+</div>

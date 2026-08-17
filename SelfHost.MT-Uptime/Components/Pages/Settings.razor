@@ -1,0 +1,187 @@
+@page "/settings"
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = AuthPolicies.Admin)]
+@inject ISettingsService SettingsService
+@inject IEnumerable<INotificationChannel> Channels
+@inject RetentionService Retention
+@inject NavigationManager Navigation
+
+<PageTitle>Settings — MT-Uptime</PageTitle>
+
+<div class="page-header">
+    <h1>Email alerts (SendGrid)</h1>
+</div>
+
+<p class="muted">Alerts are delivered through SendGrid. The <em>From</em> address must be a verified SendGrid sender.</p>
+
+<EditForm Model="_model" OnValidSubmit="SaveAsync" class="form form-wide">
+    <label>SendGrid API key
+        <InputText @bind-Value="_model.ApiKey" type="password"
+                   placeholder="@(_hasKey ? "•••••• stored — leave blank to keep" : "SG.xxxxxxxx")" />
+    </label>
+    <label>From email
+        <InputText @bind-Value="_model.FromEmail" placeholder="alerts@example.com" />
+    </label>
+    <label>From name
+        <InputText @bind-Value="_model.FromName" placeholder="MT-Uptime" />
+    </label>
+    <label>Alert recipient (To)
+        <InputText @bind-Value="_model.ToEmail" placeholder="you@example.com" />
+    </label>
+
+    @if (_message is not null)
+    {
+        <div class="alert @(_ok ? "success" : "error")">@_message</div>
+    }
+
+    <div class="actions">
+        <button type="submit" class="btn">Save</button>
+        <button type="button" class="btn-secondary" @onclick="SendTestAsync" disabled="@_busy">Send test email</button>
+    </div>
+</EditForm>
+
+<div class="page-header">
+    <h1>Data retention</h1>
+</div>
+
+<p class="muted">
+    Raw heartbeats older than this are pruned once a day to keep the database small. Hourly and daily
+    rollups are written before pruning, so long-range uptime stays accurate after the raw rows are gone.
+</p>
+
+<EditForm Model="_retention" OnValidSubmit="SaveRetentionAsync" class="form form-wide">
+    <label>Keep raw heartbeat history (days)
+        <InputNumber @bind-Value="_retention.RawDays" min="1" />
+    </label>
+
+    @if (_retentionMessage is not null)
+    {
+        <div class="alert @(_retentionOk ? "success" : "error")">@_retentionMessage</div>
+    }
+
+    <div class="actions">
+        <button type="submit" class="btn">Save</button>
+        <button type="button" class="btn-secondary" @onclick="RunCleanupAsync" disabled="@_cleanupBusy">
+            @(_cleanupBusy ? "Running…" : "Run cleanup now")
+        </button>
+    </div>
+</EditForm>
+
+@if (_lastRun is not null)
+{
+    <p class="muted">Last cleanup: @_lastRun</p>
+}
+
+<div class="page-header">
+    <h1>Backup &amp; export</h1>
+</div>
+
+<p class="muted">
+    Download a consistent snapshot of the database (WAL checkpointed first), or export monitor
+    definitions as JSON. Encrypted secrets are redacted from the JSON export.
+</p>
+
+<div class="actions">
+    <button type="button" class="btn-secondary" @onclick="DownloadBackup">Download database backup</button>
+    <button type="button" class="btn-secondary" @onclick="ExportMonitors">Export monitors (JSON)</button>
+</div>
+
+@code {
+    private readonly EmailSettings _model = new();
+    private bool _hasKey;
+    private bool _ok;
+    private bool _busy;
+    private string? _message;
+
+    private RetentionSettings _retention = new();
+    private bool _retentionOk;
+    private string? _retentionMessage;
+    private bool _cleanupBusy;
+    private string? _lastRun;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var cfg = await SettingsService.GetEmailAsync();
+        _hasKey = !string.IsNullOrEmpty(cfg.ApiKey);
+        _model.FromEmail = cfg.FromEmail;
+        _model.FromName = cfg.FromName;
+        _model.ToEmail = cfg.ToEmail;
+        // The API key is never sent back to the browser.
+
+        _retention = await SettingsService.GetRetentionAsync();
+        UpdateLastRun();
+    }
+
+    private async Task SaveAsync()
+    {
+        await SettingsService.SaveEmailAsync(_model);
+        _model.ApiKey = null;
+        var cfg = await SettingsService.GetEmailAsync();
+        _hasKey = !string.IsNullOrEmpty(cfg.ApiKey);
+        _ok = true;
+        _message = "Settings saved.";
+    }
+
+    private async Task SendTestAsync()
+    {
+        _busy = true;
+        try
+        {
+            var cfg = await SettingsService.GetEmailAsync();
+            if (!cfg.IsConfigured)
+            {
+                _ok = false;
+                _message = "Save a complete configuration first (API key, From email, and recipient).";
+                return;
+            }
+
+            var email = Channels.FirstOrDefault(c => c.Type == NotificationChannelType.Email);
+            if (email is null) { _ok = false; _message = "No email channel is registered."; return; }
+
+            var json = System.Text.Json.JsonSerializer.Serialize(cfg);
+            var testEvt = new NotificationEvent(0, "Test notification", MonitorStatus.Up, MonitorStatus.Down,
+                DateTime.UtcNow, "If you received this, MT-Uptime email is working.", null, NotifyKind.Up);
+            var ok = await email.SendAsync(testEvt, json, CancellationToken.None);
+
+            _ok = ok;
+            _message = ok ? "Test email sent." : "Send failed — check the logs and your SendGrid sender verification.";
+        }
+        finally { _busy = false; }
+    }
+
+    private async Task SaveRetentionAsync()
+    {
+        await SettingsService.SaveRetentionAsync(_retention);
+        _retention = await SettingsService.GetRetentionAsync();
+        _retentionOk = true;
+        _retentionMessage = $"Retention saved — keeping {_retention.RawDays} day(s) of raw history.";
+    }
+
+    private async Task RunCleanupAsync()
+    {
+        _cleanupBusy = true;
+        _retentionMessage = null;
+        try
+        {
+            var result = await Retention.RunCleanupAsync();
+            _retentionOk = true;
+            _retentionMessage =
+                $"Cleanup done — {result.BucketsRolledUp} bucket(s) rolled up, {result.RawHeartbeatsPruned} heartbeat(s) pruned.";
+            UpdateLastRun();
+        }
+        catch (Exception ex)
+        {
+            _retentionOk = false;
+            _retentionMessage = $"Cleanup failed: {ex.Message}";
+        }
+        finally { _cleanupBusy = false; }
+    }
+
+    private void UpdateLastRun()
+        => _lastRun = Retention.LastRunUtc is { } t
+            ? $"{t:yyyy-MM-dd HH:mm:ss} UTC — {Retention.LastRunSummary}"
+            : null;
+
+    private void DownloadBackup() => Navigation.NavigateTo("/admin/backup", forceLoad: true);
+    private void ExportMonitors() => Navigation.NavigateTo("/admin/export/monitors", forceLoad: true);
+}

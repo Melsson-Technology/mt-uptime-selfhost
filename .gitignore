@@ -1,0 +1,39 @@
+# Build output
+bin/
+obj/
+[Bb]uild/
+artifacts/
+publish/
+TestResults/
+*.nupkg
+*.snupkg
+
+# Rider / VS / VS Code
+.vs/
+.idea/
+.vscode/
+*.user
+*.suo
+
+# Runtime data — the SQLite database AND the Data Protection keys.
+#
+# The wildcard matters: a plain `App_Data/` does NOT match sibling copies such as
+# `App_Data.bak-2026-01-01/`, and those backups contain the Data Protection master key in
+# UNENCRYPTED form. That key decrypts every stored secret (SMTP/API credentials, database
+# passwords, webhook URLs) and signs auth cookies, so a stray backup directory is the single
+# worst thing that could land in this repository.
+**/App_Data*/
+*.db
+*.db-wal
+*.db-shm
+*.design.db*
+
+# Local tooling config — machine-specific paths, and not useful to anyone else
+.claude/settings.local.json
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db

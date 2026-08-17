@@ -1,0 +1,237 @@
+@page "/maintenance/new"
+@page "/maintenance/{Id:int}/edit"
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = AuthPolicies.Editor)]
+@inject MT.Uptime.Core.Maintenance.MaintenanceWindowService Windows
+@inject MT.Uptime.Core.Tags.TagService TagService
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject NavigationManager Nav
+
+<PageTitle>@(IsNew ? "New maintenance window" : "Edit maintenance window") — MT-Uptime</PageTitle>
+
+<div class="page-header">
+    <h1>@(IsNew ? "New maintenance window" : "Edit maintenance window")</h1>
+</div>
+
+<EditForm Model="_model" OnValidSubmit="SaveAsync" class="form form-wide">
+    <label>Name <InputText @bind-Value="_model.Name" placeholder="Sunday database maintenance" /></label>
+    <label>Description (optional) <InputText @bind-Value="_model.Description" /></label>
+    <label class="check"><InputCheckbox @bind-Value="_model.Enabled" /> Enabled</label>
+    <label class="check"><InputCheckbox @bind-Value="_model.Publish" /> Announce on status pages</label>
+
+    <fieldset>
+        <legend>When</legend>
+        <label class="check">
+            <input type="radio" name="recurrence" checked="@(_model.Recurrence == MaintenanceRecurrence.Once)"
+                   @onchange="@(() => { _model.Recurrence = MaintenanceRecurrence.Once; })" />
+            One-off
+        </label>
+        <label class="check">
+            <input type="radio" name="recurrence" checked="@(_model.Recurrence == MaintenanceRecurrence.Weekly)"
+                   @onchange="@(() => { _model.Recurrence = MaintenanceRecurrence.Weekly; })" />
+            Repeating
+        </label>
+
+        @if (_model.Recurrence == MaintenanceRecurrence.Once)
+        {
+            <label>Starts (UTC) <input type="datetime-local" @bind="_model.StartsAt" /></label>
+            <label>Ends (UTC) <input type="datetime-local" @bind="_model.EndsAt" /></label>
+        }
+        else
+        {
+            <div class="day-picker">
+                @foreach (var d in Enumerable.Range(0, 7))
+                {
+                    <label class="check">
+                        <input type="checkbox" checked="@((_model.DaysOfWeekMask & (1 << d)) != 0)"
+                               @onchange="e => ToggleDay(d, (bool)(e.Value ?? false))" />
+                        @(((DayOfWeek)d).ToString()[..3])
+                    </label>
+                }
+            </div>
+            <label>Starts at <input type="time" @bind="_model.StartTime" /></label>
+            <label>Duration (minutes) <InputNumber @bind-Value="_model.DurationMinutes" /></label>
+            <label>
+                Time zone
+                <select @bind="_model.TimeZoneId">
+                    @foreach (var tz in _zones)
+                    {
+                        <option value="@tz">@tz</option>
+                    }
+                </select>
+            </label>
+            <p class="muted">
+                A repeating window is scheduled by wall-clock in the zone you pick, so it stays at the same
+                local time across daylight-saving changes.
+            </p>
+        }
+    </fieldset>
+
+    <fieldset class="monitor-picker">
+        <legend>Covers</legend>
+        <label class="check">
+            <InputCheckbox @bind-Value="_model.AppliesToAllMonitors" /> Every monitor, including ones added later
+        </label>
+
+        @if (!_model.AppliesToAllMonitors)
+        {
+            <p class="muted">Pick monitors, tags, or both. A tag covers whatever carries it at the time.</p>
+
+            @foreach (var m in _allMonitors)
+            {
+                <label class="check">
+                    <input type="checkbox" checked="@_monitors.Contains(m.Id)"
+                           @onchange="e => Toggle(_monitors, m.Id, (bool)(e.Value ?? false))" />
+                    @m.Name <span class="muted">(@m.Type)</span>
+                </label>
+            }
+
+            @if (_allTags.Count > 0)
+            {
+                <p class="muted">Tags</p>
+                @foreach (var t in _allTags)
+                {
+                    <label class="check">
+                        <input type="checkbox" checked="@_tags.Contains(t.Id)"
+                               @onchange="e => Toggle(_tags, t.Id, (bool)(e.Value ?? false))" />
+                        <span class="tag-chip" style="background-color:@t.Colour">@t.Name</span>
+                    </label>
+                }
+            }
+        }
+    </fieldset>
+
+    @if (_error is not null)
+    {
+        <div class="alert error">@_error</div>
+    }
+
+    <div class="actions">
+        <button type="submit" class="btn">Save</button>
+        <a href="/maintenance" class="btn-secondary">Cancel</a>
+        @if (!IsNew)
+        {
+            <button type="button" class="btn-danger" @onclick="DeleteAsync">Delete</button>
+        }
+    </div>
+</EditForm>
+
+@code {
+    [Parameter] public int? Id { get; set; }
+    private bool IsNew => Id is null;
+
+    private readonly Model _model = new();
+    private List<Monitor> _allMonitors = new();
+    private List<Tag> _allTags = new();
+    private readonly HashSet<int> _monitors = new();
+    private readonly HashSet<int> _tags = new();
+    private string? _error;
+
+    /// <summary>
+    /// UTC first, then whatever the host knows. The list is long, but a wrong zone silently moves a
+    /// window by hours — worth a real picker rather than a free-text field to typo.
+    /// </summary>
+    private List<string> _zones = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using (var db = await DbFactory.CreateDbContextAsync())
+            _allMonitors = await db.Monitors.AsNoTracking().OrderBy(m => m.Name).ToListAsync();
+
+        _allTags = await TagService.ListAsync();
+
+        _zones = ["UTC", .. TimeZoneInfo.GetSystemTimeZones()
+            .Select(z => z.Id)
+            .Where(z => !string.Equals(z, "UTC", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(z => z, StringComparer.OrdinalIgnoreCase)];
+
+        if (Id is int id)
+        {
+            var w = await Windows.GetAsync(id);
+            if (w is null) { Nav.NavigateTo("/maintenance"); return; }
+
+            _model.Name = w.Name;
+            _model.Description = w.Description;
+            _model.Enabled = w.Enabled;
+            _model.Publish = w.Publish;
+            _model.Recurrence = w.Recurrence;
+            _model.StartsAt = w.StartsAt;
+            _model.EndsAt = w.EndsAt;
+            _model.StartTime = TimeOnly.FromTimeSpan(TimeSpan.FromMinutes(w.StartMinuteOfDay));
+            _model.DurationMinutes = w.DurationMinutes;
+            _model.DaysOfWeekMask = w.DaysOfWeekMask;
+            _model.TimeZoneId = w.TimeZoneId;
+            _model.AppliesToAllMonitors = w.AppliesToAllMonitors;
+
+            foreach (var m in w.Monitors) _monitors.Add(m.MonitorId);
+            foreach (var t in w.Tags) _tags.Add(t.TagId);
+        }
+    }
+
+    private static void Toggle(HashSet<int> set, int id, bool on)
+    {
+        if (on) set.Add(id); else set.Remove(id);
+    }
+
+    private void ToggleDay(int day, bool on)
+    {
+        if (on) _model.DaysOfWeekMask |= 1 << day;
+        else _model.DaysOfWeekMask &= ~(1 << day);
+    }
+
+    private async Task SaveAsync()
+    {
+        var window = new MaintenanceWindow
+        {
+            Id = Id ?? 0,
+            Name = _model.Name,
+            Description = string.IsNullOrWhiteSpace(_model.Description) ? null : _model.Description.Trim(),
+            Enabled = _model.Enabled,
+            Publish = _model.Publish,
+            Recurrence = _model.Recurrence,
+            // The datetime-local input has no zone, and the label says UTC, so it is read as UTC rather
+            // than being reinterpreted against the server's clock.
+            StartsAt = AsUtc(_model.StartsAt),
+            EndsAt = AsUtc(_model.EndsAt),
+            StartMinuteOfDay = (int)_model.StartTime.ToTimeSpan().TotalMinutes,
+            DurationMinutes = _model.DurationMinutes,
+            DaysOfWeekMask = _model.DaysOfWeekMask,
+            TimeZoneId = _model.TimeZoneId,
+            AppliesToAllMonitors = _model.AppliesToAllMonitors,
+        };
+
+        var monitors = _model.AppliesToAllMonitors ? [] : _monitors.ToArray();
+        var tags = _model.AppliesToAllMonitors ? [] : _tags.ToArray();
+
+        _error = await Windows.SaveAsync(window, monitors, tags);
+        if (_error is null) Nav.NavigateTo("/maintenance");
+    }
+
+    private static DateTime? AsUtc(DateTime? local)
+        => local is null ? null : DateTime.SpecifyKind(local.Value, DateTimeKind.Utc);
+
+    private async Task DeleteAsync()
+    {
+        if (Id is int id)
+        {
+            await Windows.DeleteAsync(id);
+            Nav.NavigateTo("/maintenance");
+        }
+    }
+
+    private sealed class Model
+    {
+        public string Name { get; set; } = "";
+        public string? Description { get; set; }
+        public bool Enabled { get; set; } = true;
+        public bool Publish { get; set; } = true;
+        public MaintenanceRecurrence Recurrence { get; set; } = MaintenanceRecurrence.Once;
+        public DateTime? StartsAt { get; set; }
+        public DateTime? EndsAt { get; set; }
+        public TimeOnly StartTime { get; set; } = new(2, 0);
+        public int DurationMinutes { get; set; } = 60;
+        public int DaysOfWeekMask { get; set; }
+        public string TimeZoneId { get; set; } = "UTC";
+        public bool AppliesToAllMonitors { get; set; }
+    }
+}

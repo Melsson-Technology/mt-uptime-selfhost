@@ -1,0 +1,167 @@
+@page "/incidents/{Id:long}"
+@rendermode InteractiveServer
+@attribute [Authorize]
+@inject MT.Uptime.Core.Incidents.IncidentService IncidentService
+@inject NavigationManager Nav
+
+<PageTitle>Incident — MT-Uptime</PageTitle>
+
+@if (_incident is null)
+{
+    <p class="muted">That incident does not exist. <a href="/incidents">Back to incidents</a>.</p>
+}
+else
+{
+    <div class="page-header">
+        <h1>
+            <span class="dot @StatusDisplay.DotClass(_incident.Severity)"></span>
+            @_incident.Title@(_incident.MonitorCount > 1 ? $" and {_incident.MonitorCount - 1} more" : "")
+        </h1>
+        <a href="/incidents" class="btn-secondary">Back</a>
+    </div>
+
+    <dl class="detail-grid">
+        <dt>Started</dt><dd>@_incident.StartedAt.ToString("u")</dd>
+        <dt>State</dt><dd>@(_incident.IsOpen ? "Open" : $"Resolved {_incident.ResolvedAt:u}")</dd>
+        <dt>Affected</dt><dd>@string.Join(", ", AffectedNames)</dd>
+        @if (_incident.CorrelationKey is not null)
+        {
+            <dt>Shared infrastructure</dt><dd>@Infrastructure(_incident.CorrelationKey)</dd>
+        }
+        @if (_incident.AcknowledgedAt is not null)
+        {
+            <dt>Acknowledged</dt>
+            <dd>@_incident.AcknowledgedAt?.ToString("u") @(Who is null ? "" : $"by {Who}")</dd>
+        }
+    </dl>
+
+    <AuthorizeView Policy="@AuthPolicies.Editor">
+        <label class="check">
+            <input type="checkbox" checked="@_incident.Published" @onchange="TogglePublishedAsync" />
+            Show this incident on status pages carrying an affected monitor
+        </label>
+    </AuthorizeView>
+
+    <h2>Updates</h2>
+
+    @if (_incident.Updates.Count == 0)
+    {
+        <p class="muted">No updates posted. Status pages will show this incident with a generic message.</p>
+    }
+    else
+    {
+        <ol class="status-updates">
+            @foreach (var u in _incident.Updates.OrderByDescending(u => u.PostedAt))
+            {
+                <li>
+                    <strong>@u.Kind</strong>
+                    <span class="muted">
+                        @u.PostedAt.ToString("u")
+                        @(u.PostedBy is null ? "" : $" · {u.PostedBy.DisplayName ?? u.PostedBy.Username}")
+                    </span>
+                    <p>@u.Body</p>
+                </li>
+            }
+        </ol>
+    }
+
+    <AuthorizeView Policy="@AuthPolicies.Editor" Context="editor">
+        <EditForm Model="_draft" OnValidSubmit="PostAsync" class="form form-wide">
+            <label>
+                Status
+                <select @bind="_draft.Kind">
+                    @foreach (var k in Enum.GetValues<IncidentUpdateKind>())
+                    {
+                        <option value="@k">@k</option>
+                    }
+                </select>
+            </label>
+            <label>
+                Update
+                <textarea rows="4" @bind="_draft.Body"
+                          placeholder="What is happening, in the words you want customers to read."></textarea>
+            </label>
+            @if (_error is not null)
+            {
+                <div class="alert error">@_error</div>
+            }
+            <div class="actions">
+                <button type="submit" class="btn">Post update</button>
+            </div>
+        </EditForm>
+    </AuthorizeView>
+}
+
+@code {
+    [Parameter] public long Id { get; set; }
+
+    private Incident? _incident;
+    private readonly Draft _draft = new();
+    private string? _error;
+
+    [CascadingParameter] private Task<AuthenticationState>? AuthState { get; set; }
+
+    protected override Task OnParametersSetAsync() => ReloadAsync();
+
+    private async Task ReloadAsync() => _incident = await IncidentService.GetAsync(Id);
+
+    private IEnumerable<string> AffectedNames => _incident is null
+        ? []
+        : _incident.Events
+            .Select(e => e.Monitor?.Name)
+            .Where(n => !string.IsNullOrEmpty(n))
+            .Select(n => n!)
+            .Distinct();
+
+    private string? Who => _incident?.AcknowledgedBy?.DisplayName ?? _incident?.AcknowledgedBy?.Username;
+
+    /// <summary>
+    /// Drops the internal <c>ip:</c> / <c>host:</c> prefix, matching how the incident list and the alerts
+    /// present it. Showing the raw key here made the same value read differently in three places.
+    /// </summary>
+    private static string Infrastructure(string key)
+    {
+        var colon = key.IndexOf(':');
+        return colon < 0 ? key : key[(colon + 1)..];
+    }
+
+    private async Task<int?> CurrentUserIdAsync()
+    {
+        if (AuthState is null) return null;
+        var user = (await AuthState).User;
+        return int.TryParse(user.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value, out var id)
+            ? id
+            : null;
+    }
+
+    private async Task TogglePublishedAsync(ChangeEventArgs e)
+    {
+        await IncidentService.SetPublishedAsync(Id, (bool)(e.Value ?? false));
+        await ReloadAsync();
+    }
+
+    private async Task PostAsync()
+    {
+        _error = null;
+        if (string.IsNullOrWhiteSpace(_draft.Body))
+        {
+            _error = "Write something before posting.";
+            return;
+        }
+
+        if (!await IncidentService.AddUpdateAsync(Id, _draft.Kind, _draft.Body, await CurrentUserIdAsync(), DateTime.UtcNow))
+        {
+            _error = "That incident no longer exists.";
+            return;
+        }
+
+        _draft.Body = "";
+        await ReloadAsync();
+    }
+
+    private sealed class Draft
+    {
+        public IncidentUpdateKind Kind { get; set; } = IncidentUpdateKind.Investigating;
+        public string Body { get; set; } = "";
+    }
+}

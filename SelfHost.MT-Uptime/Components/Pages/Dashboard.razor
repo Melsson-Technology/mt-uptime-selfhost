@@ -1,0 +1,175 @@
+@page "/"
+@rendermode InteractiveServer
+@attribute [Authorize]
+@implements IDisposable
+@inject MonitorStateService State
+@inject MT.Uptime.Core.Tags.TagService TagService
+
+<PageTitle>Dashboard — MT-Uptime</PageTitle>
+
+<div class="page-header">
+    <h1>Monitors</h1>
+    <a href="/monitors/new" class="btn">+ New monitor</a>
+</div>
+
+@if (_tags.Count > 0)
+{
+    <div class="tag-filter">
+        @foreach (var tag in _tags)
+        {
+            <button type="button" class="btn-tag @(_activeTags.Contains(tag.Id) ? "on" : "")"
+                    @onclick="() => ToggleTag(tag.Id)">
+                <span class="swatch" style="background-color:@tag.Colour"></span>
+                @tag.Name
+                <span class="count">@(_counts.TryGetValue(tag.Id, out var n) ? n : 0)</span>
+            </button>
+        }
+        @if (_untaggedCount > 0)
+        {
+            <button type="button" class="btn-tag @(_untaggedOnly ? "on" : "")" @onclick="ToggleUntagged">
+                Untagged <span class="count">@_untaggedCount</span>
+            </button>
+        }
+        @if (_activeTags.Count > 0 || _untaggedOnly)
+        {
+            <button type="button" class="btn-link" @onclick="ClearFilter">Clear</button>
+        }
+    </div>
+}
+
+@if (_states.Count == 0)
+{
+    <p class="muted">No monitors yet. <a href="/monitors/new">Add your first monitor</a>.</p>
+}
+else if (Visible.Count == 0)
+{
+    <p class="muted">No monitors match that filter. <button type="button" class="btn-link" @onclick="ClearFilter">Clear it</button>.</p>
+}
+else
+{
+    <table class="monitors">
+        <thead>
+            <tr>
+                <th></th><th>Name</th><th>Tags</th><th>Type</th><th>Status</th><th>History</th><th>Response</th><th>Last check</th><th></th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var m in Visible)
+            {
+                <tr>
+                    <td><span class="dot @DotClass(m)" title="@StatusText(m)"></span></td>
+                    <td class="name"><a href="@($"/monitors/{m.MonitorId}")">@m.Name</a></td>
+                    <td>
+                        <span class="tag-cell">
+                            @foreach (var tag in TagsFor(m.MonitorId))
+                            {
+                                <span class="tag-chip" style="background-color:@tag.Colour">@tag.Name</span>
+                            }
+                        </span>
+                    </td>
+                    <td>@m.Type</td>
+                    <td>@StatusText(m)</td>
+                    <td><HeartbeatBar Statuses="m.Recent" Height="20" BarWidth="4" Gap="1" /></td>
+                    <td>@(m.LastResponseMs is null ? "—" : $"{m.LastResponseMs:0} ms")</td>
+                    <td title="@(m.LastCheckAt?.ToString("u"))">@(m.LastCheckAt is null ? "—" : Relative(m.LastCheckAt.Value))</td>
+                    <td><a href="@($"/monitors/{m.MonitorId}/edit")">Edit</a></td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    private IReadOnlyList<MonitorLiveState> _states = Array.Empty<MonitorLiveState>();
+
+    // Tags are loaded once, not on every live-state push. Status changes every few seconds and tags
+    // change when someone edits a monitor — re-querying them on each heartbeat would put a database
+    // round trip on the hot path of a page whose entire point is that it does not poll.
+    private List<Tag> _tags = new();
+    private Dictionary<int, List<Tag>> _tagsByMonitor = new();
+    private Dictionary<int, int> _counts = new();
+    private readonly HashSet<int> _activeTags = new();
+    private bool _untaggedOnly;
+
+    private int _untaggedCount;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _states = State.Snapshot();
+        State.Changed += OnChanged;
+
+        _tags = await TagService.ListAsync();
+        _tagsByMonitor = await TagService.TagsByMonitorAsync();
+        _counts = await TagService.CountsByTagAsync();
+        _untaggedCount = _states.Count(m => !_tagsByMonitor.ContainsKey(m.MonitorId));
+    }
+
+    private IReadOnlyList<Tag> TagsFor(int monitorId)
+        => _tagsByMonitor.TryGetValue(monitorId, out var tags) ? tags : Array.Empty<Tag>();
+
+    /// <summary>
+    /// Selected tags are OR-ed, not AND-ed: picking "staging" and "production" means "show me both",
+    /// which is what a row of toggle chips looks like it should do. AND would return nothing for the
+    /// common case of two mutually exclusive environment tags.
+    /// </summary>
+    private List<MonitorLiveState> Visible
+    {
+        get
+        {
+            if (_untaggedOnly)
+                return _states.Where(m => !_tagsByMonitor.ContainsKey(m.MonitorId)).ToList();
+            if (_activeTags.Count == 0)
+                return _states.ToList();
+
+            return _states
+                .Where(m => TagsFor(m.MonitorId).Any(t => _activeTags.Contains(t.Id)))
+                .ToList();
+        }
+    }
+
+    private void ToggleTag(int id)
+    {
+        // The two filters are alternatives, not composable: "untagged AND tagged prod" is always empty.
+        _untaggedOnly = false;
+        if (!_activeTags.Add(id)) _activeTags.Remove(id);
+    }
+
+    private void ToggleUntagged()
+    {
+        _untaggedOnly = !_untaggedOnly;
+        _activeTags.Clear();
+    }
+
+    private void ClearFilter()
+    {
+        _activeTags.Clear();
+        _untaggedOnly = false;
+    }
+
+    private void OnChanged(int _) => InvokeAsync(() =>
+    {
+        _states = State.Snapshot();
+        // Recomputed from the new snapshot, not left at its initial value: it is an in-memory count, and
+        // a stale one would show "Untagged 3" next to a list of five.
+        _untaggedCount = _states.Count(m => !_tagsByMonitor.ContainsKey(m.MonitorId));
+        StateHasChanged();
+    });
+
+    // A disabled monitor overrides its last-known status; otherwise defer to the shared mapping.
+    private static string DotClass(MonitorLiveState m)
+        => !m.Enabled ? "off" : StatusDisplay.DotClass(m.Status);
+
+    private static string StatusText(MonitorLiveState m)
+        => !m.Enabled ? "Disabled" : StatusDisplay.Text(m.Status);
+
+    private static string Relative(DateTime utc)
+    {
+        var d = DateTime.UtcNow - utc;
+        if (d.TotalSeconds < 60) return $"{(int)d.TotalSeconds}s ago";
+        if (d.TotalMinutes < 60) return $"{(int)d.TotalMinutes}m ago";
+        if (d.TotalHours < 24) return $"{(int)d.TotalHours}h ago";
+        return utc.ToString("yyyy-MM-dd HH:mm 'UTC'");
+    }
+
+    public void Dispose() => State.Changed -= OnChanged;
+}

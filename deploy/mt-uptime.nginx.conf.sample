@@ -1,0 +1,46 @@
+# /etc/nginx/sites-available/mt-uptime  (symlink into sites-enabled)
+#
+# The `map` below must sit in the http{} context; because sites-enabled files are
+# included from inside http{}, defining it at the top of this file is fine.
+#
+# This is the plain :80 form. Running `certbot --nginx -d uptime.example.com`
+# rewrites it in place to add the :443 TLS server block and an HTTP->HTTPS redirect.
+
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+server {
+    listen      80;
+    listen      [::]:80;
+    server_name uptime.example.com;
+
+    # HSTS. Certbot adds `listen 443 ssl` to *this* server block and splits the plain :80 traffic into a
+    # separate redirect-only block, so this header ends up being served over TLS where it takes effect.
+    # Browsers ignore it over plain HTTP, so it is harmless to have here before certbot runs.
+    # `always` so it is sent on error responses too. Note this pins the browser to HTTPS for this host
+    # for a year — make sure certificate renewal is working before you consider adding `preload`
+    # (preload is effectively irreversible). No `includeSubDomains`: this host has no subdomains.
+    add_header Strict-Transport-Security "max-age=31536000" always;
+
+    location / {
+        # Must match ASPNETCORE_URLS in the systemd unit (or your /etc/mt-uptime/mt-uptime.env
+        # override). 5081, not the ASP.NET Core default of 5000, which is usually already in use on a
+        # shared host — check this one is free too with `ss -ltnp | grep :5081`.
+        proxy_pass         http://127.0.0.1:5081;
+        proxy_http_version 1.1;
+
+        # Required for the Blazor Server SignalR circuit (WebSocket upgrade).
+        proxy_set_header   Upgrade $http_upgrade;
+        proxy_set_header   Connection $connection_upgrade;
+
+        proxy_set_header   Host $host;
+        proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+
+        proxy_cache_bypass $http_upgrade;
+        proxy_buffering    off;
+        proxy_read_timeout 120s;   # keep long-lived circuits alive
+    }
+}

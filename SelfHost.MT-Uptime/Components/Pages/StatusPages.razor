@@ -1,0 +1,48 @@
+@page "/status-pages"
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = AuthPolicies.Editor)]
+@inject StatusPageService Pages
+
+<PageTitle>Status pages — MT-Uptime</PageTitle>
+
+<div class="page-header">
+    <h1>Status pages</h1>
+    <a href="/status-pages/new" class="btn">+ New status page</a>
+</div>
+
+<p class="muted">
+    A status page is a public, shareable page — no login required — that shows the live up/down
+    status and uptime of the monitors you choose. Publish one at <code>/status/your-slug</code> so
+    customers can check your services' health at a glance.
+</p>
+
+@if (_pages.Count == 0)
+{
+    <p class="muted">No status pages yet. <a href="/status-pages/new">Create one</a> to share a public status view.</p>
+}
+else
+{
+    <table class="monitors">
+        <thead>
+            <tr><th>Title</th><th>Slug</th><th>Published</th><th></th><th></th></tr>
+        </thead>
+        <tbody>
+            @foreach (var p in _pages)
+            {
+                <tr>
+                    <td class="name">@p.Title</td>
+                    <td>@p.Slug</td>
+                    <td>@(p.Published ? "Yes" : "No")</td>
+                    <td>@if (p.Published) { <a href="@($"/status/{p.Slug}")" target="_blank">View</a> }</td>
+                    <td><a href="@($"/status-pages/{p.Id}/edit")">Edit</a></td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    private List<StatusPage> _pages = new();
+
+    protected override async Task OnInitializedAsync() => _pages = await Pages.ListAsync();
+}

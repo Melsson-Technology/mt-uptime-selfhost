@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="Core.MT-Uptime/Core.MT-Uptime.csproj" />
+  <Project Path="SelfHost.MT-Uptime/SelfHost.MT-Uptime.csproj" />
+  <Project Path="Tests.MT-Uptime/Tests.MT-Uptime.csproj" />
+</Solution>

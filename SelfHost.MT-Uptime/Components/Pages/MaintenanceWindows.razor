@@ -1,0 +1,79 @@
+@page "/maintenance"
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = AuthPolicies.Editor)]
+@inject MT.Uptime.Core.Maintenance.MaintenanceWindowService Windows
+
+<PageTitle>Maintenance — MT-Uptime</PageTitle>
+
+<div class="page-header">
+    <h1>Maintenance</h1>
+    <a href="/maintenance/new" class="btn">+ New window</a>
+</div>
+
+<p class="muted">
+    During a maintenance window, failures on the monitors it covers do not alert, and the affected checks
+    are left out of the uptime percentage entirely — counted as neither up nor down. What was recorded is
+    unchanged: a monitor that really was down still shows as down in its history.
+    Recovery notifications are always sent, even mid-window.
+</p>
+
+@if (_windows.Count == 0)
+{
+    <p class="muted">No maintenance windows. <a href="/maintenance/new">Create one</a>.</p>
+}
+else
+{
+    <table class="monitors">
+        <thead>
+            <tr><th></th><th>Name</th><th>When</th><th>Covers</th><th>Status</th><th></th></tr>
+        </thead>
+        <tbody>
+            @foreach (var w in _windows)
+            {
+                <tr @key="w.Id">
+                    <td><span class="dot @(IsOpen(w) ? "degraded" : w.Enabled ? "up" : "off")"></span></td>
+                    <td class="name">@w.Name</td>
+                    <td>@Schedule(w)</td>
+                    <td>@Scope(w)</td>
+                    <td>@(!w.Enabled ? "Disabled" : IsOpen(w) ? "Open now" : "Scheduled")</td>
+                    <td><a href="@($"/maintenance/{w.Id}/edit")">Edit</a></td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    private List<MaintenanceWindow> _windows = new();
+
+    protected override async Task OnInitializedAsync() => _windows = await Windows.ListAsync();
+
+    private static bool IsOpen(MaintenanceWindow w)
+        => MT.Uptime.Core.Maintenance.MaintenanceWindowService.IsOpenAt(w, DateTime.UtcNow);
+
+    private static string Schedule(MaintenanceWindow w)
+    {
+        if (w.Recurrence == MaintenanceRecurrence.Once)
+            return $"{w.StartsAt:yyyy-MM-dd HH:mm} – {w.EndsAt:yyyy-MM-dd HH:mm} UTC";
+
+        var days = string.Join(", ", Enumerable.Range(0, 7)
+            .Where(d => (w.DaysOfWeekMask & (1 << d)) != 0)
+            .Select(d => ((DayOfWeek)d).ToString()[..3]));
+        var start = TimeSpan.FromMinutes(w.StartMinuteOfDay);
+        return $"{days} {start:hh\\:mm} for {w.DurationMinutes}m ({w.TimeZoneId})";
+    }
+
+    private static string Scope(MaintenanceWindow w)
+    {
+        if (w.AppliesToAllMonitors) return "All monitors";
+
+        var parts = new List<string>();
+        var monitors = w.Monitors.Select(m => m.Monitor?.Name).Where(n => !string.IsNullOrEmpty(n)).ToList();
+        if (monitors.Count > 0) parts.Add(string.Join(", ", monitors));
+
+        var tags = w.Tags.Select(t => t.Tag?.Name).Where(n => !string.IsNullOrEmpty(n)).ToList();
+        if (tags.Count > 0) parts.Add("tagged " + string.Join(", ", tags));
+
+        return parts.Count == 0 ? "Nothing" : string.Join(" · ", parts);
+    }
+}

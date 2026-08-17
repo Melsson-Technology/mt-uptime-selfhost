@@ -1,0 +1,193 @@
+@page "/status/{Slug}"
+@attribute [AllowAnonymous]
+@layout PublicLayout
+@inject StatusPageService Pages
+@inject MonitorStatsService Stats
+@inject MT.Uptime.Core.Incidents.IncidentService IncidentService
+@inject MT.Uptime.Core.Maintenance.MaintenanceWindowService Maintenance
+
+<PageTitle>@(_page?.Title ?? "Status")</PageTitle>
+<HeadContent>
+    <meta http-equiv="refresh" content="60" />
+</HeadContent>
+
+<div class="status-wrap">
+    @if (_page is null)
+    {
+        <p class="muted">This status page is not available.</p>
+    }
+    else
+    {
+        <header class="status-head">
+            <img src="@Assets["img/logo_red_gear.png"]" alt="" class="status-logo" />
+            <h1>@_page.Title</h1>
+            @if (!string.IsNullOrWhiteSpace(_page.Description))
+            {
+                <p class="muted">@_page.Description</p>
+            }
+        </header>
+
+        <div class="status-banner @BannerClass">
+            @BannerText
+        </div>
+
+        @if (_maintenance.Count > 0)
+        {
+            <section class="status-section">
+                <h2>Scheduled maintenance</h2>
+                @foreach (var m in _maintenance)
+                {
+                    <article class="status-notice @(m.InProgress ? "in-progress" : "")">
+                        <h3>@m.Name</h3>
+                        <p class="muted">
+                            @(m.InProgress ? "In progress · " : "")
+                            @m.StartsAt.ToString("yyyy-MM-dd HH:mm") – @m.EndsAt.ToString("HH:mm") UTC
+                        </p>
+                        @if (!string.IsNullOrWhiteSpace(m.Description))
+                        {
+                            <p>@m.Description</p>
+                        }
+                    </article>
+                }
+            </section>
+        }
+
+        @if (_incidents.Count > 0)
+        {
+            <section class="status-section">
+                <h2>Incidents</h2>
+                @foreach (var i in _incidents)
+                {
+                    <article class="status-notice @(i.IsOpen ? "open" : "resolved")">
+                        <h3>
+                            <span class="dot @DotClass(i.Severity)"></span>
+                            @i.Headline
+                        </h3>
+                        <p class="muted">
+                            Started @i.StartedAt.ToString("yyyy-MM-dd HH:mm 'UTC'")
+                            @if (i.ResolvedAt is { } r)
+                            {
+                                <text> · resolved @r.ToString("yyyy-MM-dd HH:mm 'UTC'")</text>
+                            }
+                            else
+                            {
+                                <text> · ongoing</text>
+                            }
+                        </p>
+                        @if (i.Updates.Count == 0)
+                        {
+                            <p class="muted">We are looking into this.</p>
+                        }
+                        else
+                        {
+                            <ol class="status-updates">
+                                @foreach (var u in i.Updates)
+                                {
+                                    <li>
+                                        <strong>@u.Kind</strong>
+                                        <span class="muted">@u.PostedAt.ToString("yyyy-MM-dd HH:mm 'UTC'")</span>
+                                        <p>@u.Body</p>
+                                    </li>
+                                }
+                            </ol>
+                        }
+                    </article>
+                }
+            </section>
+        }
+
+        @if (_items.Count == 0)
+        {
+            <p class="muted">No monitors are shown on this page.</p>
+        }
+        else
+        {
+            <ul class="status-list">
+                @foreach (var item in _items)
+                {
+                    <li>
+                        <span class="dot @DotClass(item.Status)"></span>
+                        <span class="s-name">@item.Name</span>
+                        <span class="s-uptime">@(item.Uptime is { } u ? $"{u:0.0}% uptime (30d)" : "")</span>
+                        <span class="s-status @StatusClass(item.Status)">@StatusText(item.Status)</span>
+                    </li>
+                }
+            </ul>
+        }
+
+        <footer class="status-foot">
+            <span>Updated @DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm 'UTC'")</span>
+            <span>Powered by MT-Uptime</span>
+        </footer>
+    }
+</div>
+
+@code {
+    [Parameter] public string Slug { get; set; } = "";
+
+    private StatusPage? _page;
+    private readonly List<Item> _items = new();
+    private List<MT.Uptime.Core.Incidents.PublicIncident> _incidents = new();
+    private List<MT.Uptime.Core.Incidents.PublicMaintenance> _maintenance = new();
+    private bool _anyDown;
+    private bool _anyDegraded;
+
+    /// <summary>How long a resolved incident stays on the page, so a reader arriving late still sees it.</summary>
+    private static readonly TimeSpan ResolvedIncidentsShownFor = TimeSpan.FromDays(7);
+
+    /// <summary>How far ahead scheduled maintenance is announced.</summary>
+    private static readonly TimeSpan MaintenanceHorizon = TimeSpan.FromDays(14);
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _items.Clear();
+        _incidents = [];
+        _maintenance = [];
+        _anyDown = false;
+        _anyDegraded = false;
+
+        _page = await Pages.GetPublishedBySlugAsync(Slug);
+        if (_page is null) return;
+
+        foreach (var spm in _page.Monitors.OrderBy(m => m.SortOrder))
+        {
+            var mon = spm.Monitor;
+            if (mon is null) continue;
+            var uptime = await Stats.GetUptimeAsync(mon.Id, TimeSpan.FromDays(30));
+            _items.Add(new Item(mon.Name, mon.CurrentStatus, uptime));
+            if (mon.CurrentStatus == MonitorStatus.Down) _anyDown = true;
+            if (mon.CurrentStatus == MonitorStatus.Degraded) _anyDegraded = true;
+        }
+
+        var now = DateTime.UtcNow;
+
+        // Projected per page — see PublicIncident on why the entity must not be rendered here.
+        _incidents = await IncidentService.GetForStatusPageAsync(_page.Id, now, ResolvedIncidentsShownFor);
+
+        var monitorIds = _page.Monitors.Select(m => m.MonitorId).ToList();
+        _maintenance = [.. (await Maintenance.UpcomingForAsync(monitorIds, now, MaintenanceHorizon))
+            .Select(m => new MT.Uptime.Core.Incidents.PublicMaintenance(
+                m.Window.Name, m.Window.Description, m.StartsAt, m.EndsAt, m.InProgress))];
+    }
+
+    private bool MaintenanceInProgress => _maintenance.Any(m => m.InProgress);
+
+    // Maintenance outranks both, because during planned work a red banner is alarming and wrong — the
+    // work was announced. Below that, an outage outranks a slowdown: if anything is down, say so rather
+    // than softening it to "degraded". Per-monitor state stays visible in the list either way.
+    private string BannerClass => MaintenanceInProgress ? "degraded" : _anyDown ? "bad" : _anyDegraded ? "degraded" : "ok";
+
+    private string BannerText => MaintenanceInProgress
+        ? "Scheduled maintenance in progress"
+        : _anyDown
+            ? "Some systems are experiencing issues"
+            : _anyDegraded
+                ? "All systems operational, some responding slowly"
+                : "All systems operational";
+
+    private readonly record struct Item(string Name, MonitorStatus Status, double? Uptime);
+
+    private static string DotClass(MonitorStatus s) => StatusDisplay.DotClass(s);
+    private static string StatusClass(MonitorStatus s) => StatusDisplay.BadgeClass(s);
+    private static string StatusText(MonitorStatus s) => StatusDisplay.PublicText(s);
+}

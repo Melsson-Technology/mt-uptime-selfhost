@@ -1,0 +1,205 @@
+@page "/incidents"
+@rendermode InteractiveServer
+@attribute [Authorize]
+@inject MT.Uptime.Core.Incidents.IncidentService IncidentService
+
+<PageTitle>Incidents — MT-Uptime</PageTitle>
+
+<div class="page-header">
+    <h1>Incidents</h1>
+</div>
+
+<p class="muted">
+    An incident groups the monitors that failed together. When several monitors resolve to the same host,
+    one outage there opens a single incident rather than one alert per site.
+    Acknowledging stops the repeat alerts for every monitor in the incident until it recovers —
+    the recovery notification is always sent.
+</p>
+
+@if (_error is not null)
+{
+    <div class="alert error">@_error</div>
+}
+
+<h2>Open</h2>
+
+@if (_open.Count == 0)
+{
+    <p class="muted">Nothing is down. </p>
+}
+else
+{
+    <table class="monitors">
+        <thead>
+            <tr><th></th><th>Incident</th><th>Monitors</th><th>Started</th><th>State</th><th></th></tr>
+        </thead>
+        <tbody>
+            @foreach (var i in _open)
+            {
+                <tr @key="i.Id">
+                    <td><span class="dot @StatusDisplay.DotClass(i.Severity)" title="@StatusDisplay.Text(i.Severity)"></span></td>
+                    <td class="name">
+                        <a href="@($"/incidents/{i.Id}")">@Headline(i)</a>
+                        @if (i.CorrelationKey is not null)
+                        {
+                            <span class="muted"> · @Infrastructure(i)</span>
+                        }
+                    </td>
+                    <td>@MonitorList(i)</td>
+                    <td title="@i.StartedAt.ToString("u")">@Relative(i.StartedAt)</td>
+                    <td>@StateText(i)</td>
+                    <td>
+                        <AuthorizeView Policy="@AuthPolicies.Editor">
+                            @if (i.AcknowledgedAt is null)
+                            {
+                                <button type="button" class="btn-link" @onclick="() => AckAsync(i.Id)">Acknowledge</button>
+                            }
+                            else
+                            {
+                                <button type="button" class="btn-link" @onclick="() => UnackAsync(i.Id)">Un-acknowledge</button>
+                            }
+                            @if (IsSnoozed(i))
+                            {
+                                <button type="button" class="btn-link" @onclick="() => ClearSnoozeAsync(i.Id)">Wake</button>
+                            }
+                            else
+                            {
+                                <button type="button" class="btn-link" @onclick="() => SnoozeAsync(i.Id, TimeSpan.FromHours(1))">Snooze 1h</button>
+                                <button type="button" class="btn-link" @onclick="() => SnoozeAsync(i.Id, TimeSpan.FromHours(4))">4h</button>
+                            }
+                        </AuthorizeView>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+<h2>Recent</h2>
+
+@if (_recent.Count == 0)
+{
+    <p class="muted">No incidents recorded yet.</p>
+}
+else
+{
+    <table class="monitors">
+        <thead>
+            <tr><th></th><th>Incident</th><th>Monitors</th><th>Started</th><th>Lasted</th></tr>
+        </thead>
+        <tbody>
+            @foreach (var i in _recent)
+            {
+                <tr @key="i.Id">
+                    <td><span class="dot @StatusDisplay.DotClass(i.Severity)"></span></td>
+                    <td class="name"><a href="@($"/incidents/{i.Id}")">@Headline(i)</a></td>
+                    <td>@MonitorList(i)</td>
+                    <td title="@i.StartedAt.ToString("u")">@Relative(i.StartedAt)</td>
+                    <td>@(i.DurationSeconds is { } d ? Duration(d) : "ongoing")</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    private List<Incident> _open = new();
+    private List<Incident> _recent = new();
+    private string? _error;
+
+    [CascadingParameter] private Task<AuthenticationState>? AuthState { get; set; }
+
+    protected override Task OnInitializedAsync() => ReloadAsync();
+
+    private async Task ReloadAsync()
+    {
+        _open = await IncidentService.GetOpenAsync();
+        _recent = await IncidentService.GetRecentAsync(50);
+    }
+
+    /// <summary>
+    /// The signed-in account, so an acknowledgement records who accepted it. Null is tolerated rather
+    /// than blocking the action — knowing an outage was acknowledged matters more than the attribution.
+    /// </summary>
+    private async Task<int?> CurrentUserIdAsync()
+    {
+        if (AuthState is null) return null;
+        var user = (await AuthState).User;
+        return int.TryParse(user.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value, out var id)
+            ? id
+            : null;
+    }
+
+    private async Task AckAsync(long id)
+    {
+        await ApplyAsync(await IncidentService.AcknowledgeAsync(id, await CurrentUserIdAsync(), DateTime.UtcNow));
+    }
+
+    private async Task UnackAsync(long id) => await ApplyAsync(await IncidentService.UnacknowledgeAsync(id));
+
+    private async Task SnoozeAsync(long id, TimeSpan duration)
+        => await ApplyAsync(await IncidentService.SnoozeAsync(id, duration, DateTime.UtcNow));
+
+    private async Task ClearSnoozeAsync(long id) => await ApplyAsync(await IncidentService.ClearSnoozeAsync(id));
+
+    /// <summary>
+    /// A false result means the incident closed while the page was open — the row the user clicked is
+    /// already history. Say so rather than silently doing nothing, and reload so the list agrees.
+    /// </summary>
+    private async Task ApplyAsync(bool applied)
+    {
+        _error = applied ? null : "That incident has already resolved.";
+        await ReloadAsync();
+    }
+
+    private static bool IsSnoozed(Incident i) => i.SnoozedUntil is { } until && until > DateTime.UtcNow;
+
+    private static string Headline(Incident i)
+        => i.MonitorCount > 1 ? $"{i.Title} and {i.MonitorCount - 1} more" : i.Title;
+
+    /// <summary>The inferred host, shown so the grouping is explainable rather than magic.</summary>
+    private static string Infrastructure(Incident i)
+    {
+        var key = i.CorrelationKey!;
+        var colon = key.IndexOf(':');
+        return colon < 0 ? key : key[(colon + 1)..];
+    }
+
+    private static string MonitorList(Incident i)
+    {
+        var names = i.Events
+            .Select(e => e.Monitor?.Name)
+            .Where(n => !string.IsNullOrEmpty(n))
+            .Distinct()
+            .ToList();
+        return names.Count == 0 ? "—" : string.Join(", ", names);
+    }
+
+    private static string StateText(Incident i)
+    {
+        if (i.AcknowledgedAt is not null)
+        {
+            var who = i.AcknowledgedBy?.DisplayName ?? i.AcknowledgedBy?.Username;
+            return who is null ? "Acknowledged" : $"Acknowledged by {who}";
+        }
+        if (IsSnoozed(i)) return $"Snoozed until {i.SnoozedUntil:HH:mm} UTC";
+        return "Alerting";
+    }
+
+    private static string Duration(long seconds)
+    {
+        if (seconds < 60) return $"{seconds}s";
+        if (seconds < 3600) return $"{seconds / 60}m";
+        if (seconds < 86400) return $"{seconds / 3600}h {(seconds % 3600) / 60}m";
+        return $"{seconds / 86400}d {(seconds % 86400) / 3600}h";
+    }
+
+    private static string Relative(DateTime utc)
+    {
+        var d = DateTime.UtcNow - utc;
+        if (d.TotalSeconds < 60) return $"{(int)d.TotalSeconds}s ago";
+        if (d.TotalMinutes < 60) return $"{(int)d.TotalMinutes}m ago";
+        if (d.TotalHours < 24) return $"{(int)d.TotalHours}h ago";
+        return utc.ToString("yyyy-MM-dd HH:mm 'UTC'");
+    }
+}

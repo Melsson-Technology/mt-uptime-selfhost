@@ -1,0 +1,48 @@
+@page "/channels"
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = AuthPolicies.Editor)]
+@inject NotificationChannelService Channels
+
+<PageTitle>Notification channels — MT-Uptime</PageTitle>
+
+<div class="page-header">
+    <h1>Notification channels</h1>
+    <a href="/channels/new" class="btn">+ New channel</a>
+</div>
+
+<p class="muted">
+    Email is configured on the <a href="/settings">Settings</a> page and always sends.
+    These extra channels (Slack, webhook, Telegram) can be marked as a default for all monitors,
+    or attached to specific monitors when you edit them.
+</p>
+
+@if (_channels.Count == 0)
+{
+    <p class="muted">No channels yet.</p>
+}
+else
+{
+    <table class="monitors">
+        <thead>
+            <tr><th>Name</th><th>Type</th><th>Default</th><th>Enabled</th><th></th></tr>
+        </thead>
+        <tbody>
+            @foreach (var c in _channels)
+            {
+                <tr>
+                    <td class="name">@c.Name</td>
+                    <td>@c.Type</td>
+                    <td>@(c.IsDefault ? "Yes" : "")</td>
+                    <td>@(c.Enabled ? "Yes" : "No")</td>
+                    <td><a href="@($"/channels/{c.Id}/edit")">Edit</a></td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    private List<NotificationChannel> _channels = new();
+
+    protected override async Task OnInitializedAsync() => _channels = await Channels.ListAsync();
+}

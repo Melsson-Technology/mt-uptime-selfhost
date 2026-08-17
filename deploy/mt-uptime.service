@@ -1,0 +1,43 @@
+[Unit]
+Description=MT-Uptime monitoring service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# UseSystemd() in Program.cs wires up sd_notify readiness + journald log formatting.
+Type=notify
+User=mtuptime
+Group=mtuptime
+# deploy-on-server.sh swaps the build into $APP_HOME/publish, so both paths point inside it.
+WorkingDirectory=/opt/mt-uptime/publish
+ExecStart=/usr/bin/dotnet /opt/mt-uptime/publish/MT.Uptime.Web.dll
+
+# Kestrel listens only on loopback; Nginx terminates TLS and proxies to it.
+Environment=ASPNETCORE_ENVIRONMENT=Production
+Environment=ASPNETCORE_URLS=http://127.0.0.1:5081
+# Workstation GC keeps RSS small on a 1 vCPU / 1 GB micro instance.
+Environment=DOTNET_gcServer=0
+
+# Persist the SQLite database and Data Protection keys outside the deploy dir so
+# a redeploy of /opt/mt-uptime never touches them.
+StateDirectory=mt-uptime
+Environment=Storage__DatabasePath=/var/lib/mt-uptime/mt-uptime.db
+Environment=Storage__DataProtectionKeysPath=/var/lib/mt-uptime/keys
+
+# Per-host overrides, applied AFTER the defaults above so the file wins. Optional (the leading `-`),
+# so the unit works with or without it. The port above deliberately avoids 5000, the ASP.NET Core
+# default, which is usually taken already on a shared host — but check 5081 is free too, and if it is
+# not, move it here rather than editing the shipped unit. See mt-uptime.env.example, and copy it to
+# /etc/mt-uptime/mt-uptime.env.
+EnvironmentFile=-/etc/mt-uptime/mt-uptime.env
+
+Restart=always
+RestartSec=5
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

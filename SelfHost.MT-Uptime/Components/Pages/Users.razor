@@ -1,0 +1,232 @@
+@page "/users"
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = AuthPolicies.Admin)]
+@inject UserAccountService Accounts
+
+<PageTitle>Users — MT-Uptime</PageTitle>
+
+<div class="page-header">
+    <h1>Users</h1>
+    <button type="button" class="btn" @onclick="StartAdd">+ New user</button>
+</div>
+
+<p class="muted">
+    <strong>Admin</strong> can do everything, including managing accounts and settings.
+    <strong>Editor</strong> manages monitors, channels and status pages, but not accounts, settings or backups.
+    <strong>Viewer</strong> is read-only.
+    New accounts are created with a password you set here and hand over — the person should change it on
+    their profile page afterwards.
+</p>
+
+@if (_error is not null)
+{
+    <div class="alert error">@_error</div>
+}
+@if (_saved is not null)
+{
+    <div class="alert">@_saved</div>
+}
+
+<table class="monitors">
+    <thead>
+        <tr><th>Username</th><th>Name</th><th>Email</th><th>Role</th><th>Last login</th><th></th></tr>
+    </thead>
+    <tbody>
+        @foreach (var u in _users)
+        {
+            <tr>
+                <td class="name">@u.Username @(u.Id == _currentUserId ? "(you)" : "")</td>
+                <td>@u.DisplayName</td>
+                <td>@u.Email</td>
+                <td>
+                    <select value="@u.Role" @onchange="e => ChangeRoleAsync(u.Id, e.Value?.ToString())">
+                        @foreach (var r in Enum.GetValues<UserRole>())
+                        {
+                            <option value="@r" selected="@(u.Role == r)">@r</option>
+                        }
+                    </select>
+                </td>
+                <td>@(u.LastLoginAt?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? "never")</td>
+                <td>
+                    <button type="button" class="btn-link" @onclick="() => StartResetPassword(u)">Set password</button>
+                    @* No delete control for your own row: the service refuses it anyway, and offering a
+                       button that always errors is worse than not offering one. *@
+                    @if (u.Id != _currentUserId)
+                    {
+                        <button type="button" class="btn-link" @onclick="() => DeleteAsync(u.Id)">Delete</button>
+                    }
+                </td>
+            </tr>
+        }
+    </tbody>
+</table>
+
+@if (_adding)
+{
+    <fieldset class="monitor-picker">
+        <legend>New user</legend>
+        <EditForm Model="_new" OnValidSubmit="AddAsync" class="form">
+            <label>Username <InputText @bind-Value="_new.Username" /></label>
+            <label>Display name (optional) <InputText @bind-Value="_new.DisplayName" /></label>
+            <label>Email (optional) <InputText @bind-Value="_new.Email" /></label>
+            <label>Role
+                <InputSelect @bind-Value="_new.Role">
+                    @foreach (var r in Enum.GetValues<UserRole>())
+                    {
+                        <option value="@r">@r</option>
+                    }
+                </InputSelect>
+            </label>
+            <label>Initial password <InputText @bind-Value="_new.Password" type="password" /></label>
+            <div class="actions">
+                <button type="submit" class="btn">Create</button>
+                <button type="button" class="btn-secondary" @onclick="() => _adding = false">Cancel</button>
+            </div>
+        </EditForm>
+    </fieldset>
+}
+
+@if (_resettingUser is not null)
+{
+    <fieldset class="monitor-picker">
+        <legend>Set a new password for @_resettingUser.Username</legend>
+        <p class="muted">
+            They are not asked for their old one, so hand this over directly and have them change it.
+            Any outstanding password-reset link for this account stops working.
+        </p>
+        <EditForm Model="_reset" OnValidSubmit="ResetPasswordAsync" class="form">
+            <label>New password <InputText @bind-Value="_reset.Password" type="password" /></label>
+            <div class="actions">
+                <button type="submit" class="btn">Set password</button>
+                <button type="button" class="btn-secondary" @onclick="() => _resettingUser = null">Cancel</button>
+            </div>
+        </EditForm>
+    </fieldset>
+}
+
+@code {
+    [CascadingParameter] private Task<AuthenticationState>? AuthState { get; set; }
+
+    private const int MinPasswordLength = 8;
+    private const int MinUsernameLength = 3;
+
+    private List<AppUser> _users = new();
+    private int _currentUserId;
+    private string? _error;
+    private string? _saved;
+
+    private bool _adding;
+    private readonly NewUserModel _new = new();
+    private AppUser? _resettingUser;
+    private readonly PasswordModel _reset = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (AuthState is not null)
+        {
+            var user = (await AuthState).User;
+            _ = int.TryParse(user.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value, out _currentUserId);
+        }
+        await ReloadAsync();
+    }
+
+    private async Task ReloadAsync() => _users = await Accounts.ListAsync();
+
+    private void StartAdd()
+    {
+        _adding = true;
+        _resettingUser = null;
+        Clear();
+    }
+
+    private void StartResetPassword(AppUser u)
+    {
+        _resettingUser = u;
+        _adding = false;
+        _reset.Password = "";
+        Clear();
+    }
+
+    private async Task AddAsync()
+    {
+        Clear();
+        if (_new.Username.Trim().Length < MinUsernameLength)
+        {
+            _error = $"Username must be at least {MinUsernameLength} characters.";
+            return;
+        }
+        if (_new.Password.Length < MinPasswordLength)
+        {
+            _error = $"Password must be at least {MinPasswordLength} characters.";
+            return;
+        }
+
+        _error = await Accounts.AddUserAsync(_new.Username, _new.Password, _new.DisplayName, _new.Email, _new.Role);
+        if (_error is not null) return;
+
+        _saved = $"Created {_new.Username.Trim()}.";
+        _adding = false;
+        _new.Reset();
+        await ReloadAsync();
+    }
+
+    private async Task ChangeRoleAsync(int userId, string? value)
+    {
+        Clear();
+        if (!Enum.TryParse<UserRole>(value, out var role)) return;
+
+        _error = await Accounts.ChangeRoleAsync(userId, role);
+        // Reload either way: on failure the <select> is showing the value the admin picked, which was
+        // rejected, so the row has to be put back to what the database actually holds.
+        await ReloadAsync();
+        if (_error is null) _saved = "Role updated.";
+    }
+
+    private async Task DeleteAsync(int userId)
+    {
+        Clear();
+        _error = await Accounts.DeleteUserAsync(userId, _currentUserId);
+        if (_error is null) _saved = "Account deleted.";
+        await ReloadAsync();
+    }
+
+    private async Task ResetPasswordAsync()
+    {
+        Clear();
+        if (_resettingUser is null) return;
+        if (_reset.Password.Length < MinPasswordLength)
+        {
+            _error = $"Password must be at least {MinPasswordLength} characters.";
+            return;
+        }
+
+        _error = await Accounts.SetPasswordAsync(_resettingUser.Id, _reset.Password);
+        if (_error is null)
+        {
+            _saved = $"Password set for {_resettingUser.Username}.";
+            _resettingUser = null;
+        }
+        _reset.Password = "";
+    }
+
+    private void Clear() { _error = null; _saved = null; }
+
+    private sealed class NewUserModel
+    {
+        public string Username { get; set; } = "";
+        public string? DisplayName { get; set; }
+        public string? Email { get; set; }
+        public UserRole Role { get; set; } = UserRole.Viewer;
+        public string Password { get; set; } = "";
+
+        public void Reset()
+        {
+            Username = ""; DisplayName = null; Email = null; Role = UserRole.Viewer; Password = "";
+        }
+    }
+
+    private sealed class PasswordModel
+    {
+        public string Password { get; set; } = "";
+    }
+}

@@ -1,0 +1,39 @@
+# Build context is the repository root (docker build -f docker/Dockerfile .).
+#
+# Everything excluded here either bloats the context or would copy host build output into the image,
+# where it can shadow what the SDK stage produces — a stale bin/ is a genuinely confusing way to
+# discover that your fix did not take.
+
+**/bin/
+**/obj/
+build/
+publish/
+artifacts/
+TestResults/
+
+# Runtime data. The wildcard matters for the same reason it does in .gitignore: a sibling backup such
+# as App_Data.bak-2026-01-01/ holds the Data Protection master key in UNENCRYPTED form, and that key
+# decrypts every stored secret and signs auth cookies. Copying one into an image that gets pushed to a
+# public registry would disclose all of it.
+**/App_Data*/
+*.db
+*.db-wal
+*.db-shm
+*.design.db*
+
+# Editor, VCS and CI
+.git/
+.gitea/
+.vs/
+.idea/
+.vscode/
+*.user
+*.suo
+
+# Not needed to build or run the application. The Dockerfile is read from the host rather than the
+# context, so excluding docker/ here does not stop it being used with -f.
+docker/
+_docs/
+deploy/
+scripts/
+*.md

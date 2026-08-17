@@ -1,0 +1,39 @@
+@page "/setup"
+@attribute [AllowAnonymous]
+
+<PageTitle>Set up MT-Uptime</PageTitle>
+
+<div class="auth-card">
+    <h1>Welcome to MT-Uptime</h1>
+    <p class="muted">Create your administrator account to get started.</p>
+
+    @if (HasError)
+    {
+        <div class="alert error">Please check your entries — the username needs 3+ characters, the password 8+, both passwords must match, and the email must be valid.</div>
+    }
+
+    <form method="post" action="/auth/setup" class="form">
+        <AntiforgeryToken />
+        <label>Username
+            <input name="username" autocomplete="username" required minlength="3" />
+        </label>
+        <label>Email
+            <input name="email" type="email" autocomplete="email" required maxlength="320" />
+        </label>
+        <p class="muted">
+            Used for password-reset links. You can change it later on your profile.
+        </p>
+        <label>Password
+            <input name="password" type="password" autocomplete="new-password" required minlength="8" />
+        </label>
+        <label>Confirm password
+            <input name="confirm" type="password" autocomplete="new-password" required minlength="8" />
+        </label>
+        <button type="submit" class="btn">Create account</button>
+    </form>
+</div>
+
+@code {
+    [SupplyParameterFromQuery(Name = "error")] public string? Error { get; set; }
+    private bool HasError => !string.IsNullOrEmpty(Error);
+}
