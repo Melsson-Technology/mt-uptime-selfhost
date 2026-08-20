@@ -1,13 +1,29 @@
 # Contributing to MT-Uptime
 
+## Where this lives
+
+Development happens on Melsson Technology's own Gitea, and
+[github.com/Melsson-Technology/mt-uptime-selfhost](https://github.com/Melsson-Technology/mt-uptime-selfhost)
+is a mirror of it. GitHub is the right place to reach us — use its issue tracker — but it is pushed to
+one way, so anything committed there is overwritten by the next sync.
+
+That is also why a pull request opened on GitHub cannot be merged, however good it is. See below for the
+reason it would not be merged anyway right now.
+
 ## Code contributions are not open yet
 
 **Issues are very welcome** — bug reports, questions, feature requests, "this documentation is wrong",
 "this failed on my distro". Those are the most useful thing you can send right now, and they need no
-paperwork.
+paperwork: <https://github.com/Melsson-Technology/mt-uptime-selfhost/issues>.
 
-**Pull requests are not being accepted yet.** Please open an issue instead; if it's something you'd like
-to fix yourself, say so there and we'll get back to you when this changes.
+**Security issues are the exception — please do not open an issue.** Email
+**security@melssontechnology.com** instead; [SECURITY.md](SECURITY.md) explains what to expect and,
+just as usefully, which behaviours are deliberate and not worth reporting.
+
+**Pull requests are not being accepted yet**, and one opened here will be closed automatically with a
+pointer back to this file — not out of rudeness, but because leaving it open would imply it is being
+considered. If it's something you'd like to fix yourself, say so in an issue and we'll come back to you
+when this changes.
 
 The reason is licensing, and it is easier to be straight about it than to leave PRs sitting unanswered.
 MT-Uptime is AGPL-3.0, and Melsson Technology also intends to offer a hosted version. That combination

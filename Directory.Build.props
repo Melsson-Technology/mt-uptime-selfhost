@@ -17,8 +17,8 @@
     <Authors>Melsson Technology</Authors>
     <Copyright>Copyright (c) 2026 Melsson Technology</Copyright>
     <PackageLicenseExpression>AGPL-3.0-or-later</PackageLicenseExpression>
-    <PackageProjectUrl>https://git.melssontechnology.com/Melsson-Technology/mt-uptime-selfhost</PackageProjectUrl>
-    <RepositoryUrl>https://git.melssontechnology.com/Melsson-Technology/mt-uptime-selfhost</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/Melsson-Technology/mt-uptime-selfhost</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/Melsson-Technology/mt-uptime-selfhost</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
   </PropertyGroup>
 
@@ -42,6 +42,23 @@
   -->
   <PropertyGroup>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+  </PropertyGroup>
+
+  <!--
+    Declared so the lock files stay the same whichever way you restore.
+
+    Without this, a plain `dotnet build` or `dotnet test` writes lock files with no RID section, while
+    build-and-package.sh restores with `-r linux-x64` and adds a `net10.0/linux-x64` entry for the
+    native SQLite binary. The two forms overwrite each other, so simply testing and then packaging
+    leaves the tree dirty with a diff nobody made — and publish-public.sh, which rightly refuses to run
+    against a dirty tree, then blocks on it. Naming the RID here means every restore evaluates it and
+    the committed file is the same either way.
+
+    linux-x64 is what ships: deploy/README-deploy.md targets Linux, and build-and-package.sh publishes
+    that RID. Add others here if that ever stops being true.
+  -->
+  <PropertyGroup>
+    <RuntimeIdentifiers>linux-x64</RuntimeIdentifiers>
   </PropertyGroup>
 
 </Project>

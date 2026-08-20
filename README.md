@@ -68,7 +68,7 @@ case — this is the property that matters most, and it is the one you cannot ad
 ### Docker
 
 ```bash
-git clone https://git.melssontechnology.com/Melsson-Technology/mt-uptime-selfhost.git
+git clone https://github.com/Melsson-Technology/mt-uptime-selfhost.git
 cd mt-uptime-selfhost/docker
 docker compose up -d
 ```
@@ -100,7 +100,7 @@ covers this, bind-mount permissions, and backups.
 Requires a **.NET 10 SDK** (10.0.3xx — pinned in `global.json`).
 
 ```bash
-git clone https://git.melssontechnology.com/Melsson-Technology/mt-uptime-selfhost.git
+git clone https://github.com/Melsson-Technology/mt-uptime-selfhost.git
 cd mt-uptime-selfhost
 ./scripts/run.sh          # or .\scripts\run.ps1 on Windows
 ```

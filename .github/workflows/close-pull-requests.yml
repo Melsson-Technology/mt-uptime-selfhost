@@ -1,0 +1,64 @@
+# Closes pull requests opened against the GitHub mirror, with an explanation.
+#
+# Two separate reasons a PR cannot be accepted here, and the comment below states both:
+#
+#   1. This repository is a one-way mirror. Anything merged on GitHub is destroyed by the next sync
+#      from upstream, so a merge would silently lose the contributor's work rather than ship it.
+#   2. Contributions are closed until a licence-grant CLA exists — see CONTRIBUTING.md. MT-Uptime is
+#      AGPL-3.0 and Melsson also offers a hosted version, which only works while Melsson can relicense
+#      the codebase. That cannot be arranged retroactively.
+#
+# Leaving PRs open would imply they are under consideration. Closing them immediately, with the reason,
+# is the honest answer — and it is the one thing that stops someone spending an evening on a patch that
+# was never going to be merged.
+#
+# No third-party actions are used. `gh` is preinstalled on GitHub-hosted runners, so there is nothing to
+# pin to a commit SHA and no supply-chain surface — which is the same concern that had the Gitea
+# workflow's actions pinned in the first place.
+
+name: Pull requests are not open yet
+
+on:
+  # pull_request_target, not pull_request: a PR from a fork gets a read-only token under
+  # `pull_request`, so it could not comment or close. The usual danger of pull_request_target is
+  # checking out untrusted code while holding a writable token — this job never checks out anything.
+  pull_request_target:
+    types: [opened, reopened]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  explain-and-close:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comment and close
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          gh pr comment "$PR_URL" --body "$(cat <<EOF
+          Thank you for this, @${AUTHOR} — and sorry to close it automatically.
+
+          **Pull requests are not being accepted yet.** MT-Uptime is AGPL-3.0 and Melsson Technology
+          also offers a hosted version, which works only while Melsson holds the rights to relicense
+          the codebase. An outside contribution needs a contributor agreement granting those rights
+          *before* it is merged, and there is no way to add one afterwards. The agreement is on the
+          roadmap; until it exists, merging anything would create a problem that cannot be undone.
+
+          **This repository is also a one-way mirror**, so even a merge here would be overwritten by
+          the next sync from upstream — your work would disappear rather than ship.
+
+          Please open an issue instead. Bug reports, "this failed on my distro", and documentation
+          corrections are genuinely the most useful thing right now, and they need no paperwork. If you
+          would like to make this change yourself once contributions open, say so in the issue and we
+          will come back to you.
+
+          None of this restricts what the AGPL already grants you: fork it, modify it, run your own
+          version, ship it to others under the same licence. That needs no permission from us.
+
+          See [CONTRIBUTING.md](https://github.com/Melsson-Technology/mt-uptime-selfhost/blob/main/CONTRIBUTING.md).
+          EOF
+          )"
+          gh pr close "$PR_URL"

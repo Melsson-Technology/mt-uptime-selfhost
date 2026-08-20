@@ -64,7 +64,7 @@ that Docker caches it and startup is immediate.
 That means you need the repository, not just the Compose file:
 
 ```bash
-git clone https://git.melssontechnology.com/Melsson-Technology/mt-uptime-selfhost.git
+git clone https://github.com/Melsson-Technology/mt-uptime-selfhost.git
 cd mt-uptime-selfhost/docker
 docker compose up -d
 ```
