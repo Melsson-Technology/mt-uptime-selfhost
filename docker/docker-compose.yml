@@ -30,8 +30,11 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
 
-    # When published images exist, delete the build: block above and uncomment this instead:
-    # image: git.melssontechnology.com/melsson-technology/mt-uptime:latest
+    # When published images exist, delete the build: block above and uncomment this instead. The
+    # registry is deliberately left as a placeholder because it has not been chosen yet — see
+    # docker/README.md, which is equally plain that any mt-uptime:latest reference is aspirational
+    # for now. Naming one here would read as a promise that it exists.
+    # image: <registry>/melsson-technology/mt-uptime:latest
 
     ports:
       # host:container. 5081 on the host matches the non-Docker default, which is deliberately not

@@ -54,11 +54,15 @@
     against a dirty tree, then blocks on it. Naming the RID here means every restore evaluates it and
     the committed file is the same either way.
 
-    linux-x64 is what ships: deploy/README-deploy.md targets Linux, and build-and-package.sh publishes
-    that RID. Add others here if that ever stops being true.
+    Both RIDs that actually ship are listed. linux-x64 is what build-and-package.sh publishes and what
+    deploy/README-deploy.md targets; linux-arm64 is what docker/Dockerfile cross-publishes when
+    TARGETARCH is arm64, which is not an optional path — the Raspberry Pi and ARM VPS audience is the
+    reason the image is built for two architectures at all. Naming only linux-x64 here would leave the
+    lock file without arm64 assets, so an arm64 image build would rewrite it mid-build or, under locked
+    mode, fail outright.
   -->
   <PropertyGroup>
-    <RuntimeIdentifiers>linux-x64</RuntimeIdentifiers>
+    <RuntimeIdentifiers>linux-x64;linux-arm64</RuntimeIdentifiers>
   </PropertyGroup>
 
 </Project>

@@ -24,6 +24,7 @@ TestResults/
 # Editor, VCS and CI
 .git/
 .gitea/
+.github/
 .vs/
 .idea/
 .vscode/
