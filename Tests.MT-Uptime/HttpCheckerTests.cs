@@ -321,3 +321,51 @@ public class HttpCheckerTests
         public string Unprotect(string ciphertext) => throw new CryptographicException("bad key ring");
     }
 }
+
+/// <summary>
+/// Which pooled client an HTTP monitor's two independent toggles select. Pinned because the two are
+/// properties of the primary handler rather than of a request, so they can only be expressed as separate
+/// clients — and the mapping used to short-circuit on <c>IgnoreTlsErrors</c>, which silently re-enabled
+/// redirect following for a monitor whose operator had explicitly turned it off.
+/// </summary>
+public class HttpClientSelectionTests
+{
+    [Theory]
+    [InlineData(false, true, HttpChecker.ClientDefault)]
+    [InlineData(false, false, HttpChecker.ClientNoRedirect)]
+    [InlineData(true, true, HttpChecker.ClientInsecure)]
+    [InlineData(true, false, HttpChecker.ClientInsecureNoRedirect)]
+    public void Each_combination_of_toggles_selects_its_own_client(
+        bool ignoreTlsErrors, bool followRedirects, string expected)
+    {
+        Assert.Equal(expected, HttpChecker.ClientNameFor(ignoreTlsErrors, followRedirects));
+    }
+
+    [Fact]
+    public void Ignoring_certificate_errors_does_not_re_enable_redirects()
+    {
+        // The regression stated as the property that matters rather than as a table row: turning off
+        // certificate validation must not change the answer to the redirect question. Without this the
+        // insecure client was shared by both redirect settings, so an app returning 302 to /login was
+        // followed and reported Up while the outage stayed invisible.
+        Assert.NotEqual(
+            HttpChecker.ClientNameFor(ignoreTlsErrors: true, followRedirects: true),
+            HttpChecker.ClientNameFor(ignoreTlsErrors: true, followRedirects: false));
+    }
+
+    [Fact]
+    public void Every_combination_maps_to_a_distinct_client()
+    {
+        // Four independent handler configurations, so four names. Two combinations sharing a name is the
+        // shape of the original defect, whichever pair it happened to be.
+        var names = new[]
+        {
+            HttpChecker.ClientNameFor(false, false),
+            HttpChecker.ClientNameFor(false, true),
+            HttpChecker.ClientNameFor(true, false),
+            HttpChecker.ClientNameFor(true, true),
+        };
+
+        Assert.Equal(4, names.Distinct().Count());
+    }
+}

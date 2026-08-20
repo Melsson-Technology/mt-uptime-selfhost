@@ -82,33 +82,36 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<PushMonitorManager>();
         services.AddHostedService<PushWatchdogService>();
 
-        // Pooled HTTP clients for HttpChecker; per-monitor toggles select a variant.
-        // All three send our identifying User-Agent (see HttpChecker.UserAgent).
-        services.AddHttpClient(HttpChecker.ClientDefault, ConfigureMonitorClient)
-            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
-            {
-                AllowAutoRedirect = true,
-                PooledConnectionLifetime = TimeSpan.FromMinutes(5),
-            });
-        services.AddHttpClient(HttpChecker.ClientNoRedirect, ConfigureMonitorClient)
-            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
-            {
-                AllowAutoRedirect = false,
-                PooledConnectionLifetime = TimeSpan.FromMinutes(5),
-            });
-        services.AddHttpClient(HttpChecker.ClientInsecure, ConfigureMonitorClient)
-            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
-            {
-                AllowAutoRedirect = true,
-                PooledConnectionLifetime = TimeSpan.FromMinutes(5),
-                SslOptions = new SslClientAuthenticationOptions
-                {
-                    RemoteCertificateValidationCallback = (_, _, _, _) => true,
-                },
-            });
+        // Pooled HTTP clients for HttpChecker. Both per-monitor toggles live on the primary handler
+        // rather than on a request, so the two independent axes are four registrations rather than two,
+        // and the checker picks between them with HttpChecker.ClientNameFor — which walks the same four
+        // cases. Taking the names from that one method is load-bearing rather than tidiness:
+        // CreateClient with an unregistered name does not throw, it hands back a plain client that
+        // follows redirects and validates certificates, so a name that drifted out of this list would
+        // fail silently and in the least safe direction.
+        // All four send our identifying User-Agent (see HttpChecker.UserAgent).
+        AddProbeClient(services, ignoreTlsErrors: false, followRedirects: true);
+        AddProbeClient(services, ignoreTlsErrors: false, followRedirects: false);
+        AddProbeClient(services, ignoreTlsErrors: true, followRedirects: true);
+        AddProbeClient(services, ignoreTlsErrors: true, followRedirects: false);
 
         return services;
     }
+
+    /// <summary>Registers one HttpChecker probe client for a pair of per-monitor toggles.</summary>
+    private static void AddProbeClient(IServiceCollection services, bool ignoreTlsErrors, bool followRedirects)
+        => services.AddHttpClient(HttpChecker.ClientNameFor(ignoreTlsErrors, followRedirects), ConfigureMonitorClient)
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            {
+                AllowAutoRedirect = followRedirects,
+                PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+                SslOptions = ignoreTlsErrors
+                    ? new SslClientAuthenticationOptions
+                    {
+                        RemoteCertificateValidationCallback = (_, _, _, _) => true,
+                    }
+                    : new SslClientAuthenticationOptions(),
+            });
 
     /// <summary>Applies the shared monitor User-Agent to a named HttpChecker client.</summary>
     private static void ConfigureMonitorClient(HttpClient client)

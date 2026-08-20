@@ -2,10 +2,57 @@
 
 ```bash
 docker compose up -d
+
+# The setup wizard needs a one-time token, printed on first boot:
+docker compose logs | grep -A2 "First-run setup is open"
 ```
 
-Then open <http://localhost:5081/> and complete the setup wizard. The database is created on first
-boot; there is nothing to install and no external services to configure.
+On Windows, `grep` is not present and PowerShell does not accept `&&` as a statement separator — so
+run each line on its own and use `Select-String` for the last one:
+
+```powershell
+docker compose logs | Select-String -Context 0,2 "First-run setup is open"
+```
+
+Then open <http://localhost:5081/> and complete the setup wizard, pasting that token. The database is
+created on first boot; there is nothing to install and no external services to configure.
+
+The token exists because the wizard mints an administrator and cannot require a login — it runs before
+any account exists. Without it, anyone who can reach the port during the window between first boot and
+you finishing the form becomes the administrator, which matters the moment this is published anywhere
+less private than your laptop. It is written to `/var/lib/mt-uptime/setup-token` inside the volume, and
+destroyed once the account is created.
+
+## Exposing it beyond loopback
+
+`docker-compose.yml` publishes on `127.0.0.1:5081` — reachable from the Docker host and nowhere else.
+That is the safe default, not an oversight: Kestrel serves plain HTTP, so anything wider puts an
+unencrypted login form on the network.
+
+To reach it from elsewhere, put a reverse proxy in front and terminate TLS there
+(`deploy/mt-uptime.nginx.conf.sample` is a worked example). Two settings matter when you do:
+
+```yaml
+environment:
+  # The public address. Password-reset links are built from this rather than from the request's Host
+  # header, which the caller controls. Setting it also narrows AllowedHosts to this hostname.
+  App__PublicBaseUrl: "https://uptime.example.com"
+
+  # Only needed when the proxy is NOT on loopback — nginx in another container, or a load balancer.
+  # X-Forwarded-For is trusted from loopback by default and from nothing else, because a forwarded
+  # header from an untrusted source is just a client-chosen value: both rate limiters partition on the
+  # resulting address, so trusting it blindly means an attacker rotating the header gets an unlimited
+  # number of buckets and no cap applies. Declare the proxy's address or network instead.
+  ForwardedHeaders__KnownProxies: "172.18.0.0/16"
+```
+
+A malformed value here stops the app at startup rather than silently trusting nothing — being quietly
+wrong about this looks like working software right up until the limiter matters.
+
+> **Note on rate limiting under Docker.** With the default bridge network, connections are NATed and the
+> container often sees the gateway address rather than the real client, so per-IP limits behave as one
+> shared bucket. A reverse proxy that sets `X-Forwarded-For`, declared via `ForwardedHeaders__KnownProxies`
+> above, is what restores per-client limits.
 
 ## There is no prebuilt image yet — Compose builds one
 
@@ -120,7 +167,8 @@ checkpoints SQLite properly while running.
 ## Upgrading
 
 ```bash
-docker compose pull && docker compose up -d
+docker compose pull
+docker compose up -d
 ```
 
 Pending EF migrations apply automatically at startup. The volume is untouched. `latest` moves with

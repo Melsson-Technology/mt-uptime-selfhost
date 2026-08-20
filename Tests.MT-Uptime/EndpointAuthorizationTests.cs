@@ -6,6 +6,12 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using MT.Uptime.Core.Domain;
+using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
+using MT.Uptime.Core.Data;
+using MT.Uptime.Core.Monitoring;
+using MT.Uptime.Core.Monitoring.Configs;
+using MT.Uptime.Core.Notifications;
 using MT.Uptime.Web.Services;
 
 namespace MT.Uptime.Tests;
@@ -263,12 +269,68 @@ public sealed class UptimeAppFactory : WebApplicationFactory<Program>, IDisposab
     public async Task<string?> CurrentAdminEmailAsync()
         => (await Services.GetRequiredService<UserAccountService>().GetAsync())?.Email;
 
+    /// <summary>
+    /// Creates a push monitor and returns its id and ping token, so a test can assert on who is shown
+    /// that token. Written straight to the database rather than through the editor, which is Editor-gated
+    /// and would beg the question.
+    /// </summary>
+    public async Task<(int Id, string Token)> SeedPushMonitorAsync()
+    {
+        var token = PushMonitorManager.NewToken();
+        await using var db = await Services
+            .GetRequiredService<IDbContextFactory<AppDbContext>>().CreateDbContextAsync();
+
+        var monitor = new Monitor
+        {
+            Name = "nightly-backup",
+            Type = MonitorType.Push,
+            Enabled = true,
+            ConfigJson = JsonSerializer.Serialize(new PushMonitorConfig { Token = token, GraceSeconds = 30 }),
+        };
+        db.Monitors.Add(monitor);
+        await db.SaveChangesAsync();
+        return (monitor.Id, token);
+    }
+
+    private string? _publicBaseUrl;
+    private string? _allowedHosts;
+    private IEmailSender? _emailSender;
+
+    /// <summary>
+    /// Sets AllowedHosts explicitly. Declaring a public base URL narrows it automatically, so a test that
+    /// needs a forged Host to reach a handler has to opt out of that narrowing.
+    /// </summary>
+    public UptimeAppFactory WithAllowedHosts(string hosts)
+    {
+        _allowedHosts = hosts;
+        return this;
+    }
+
+    /// <summary>Declares the instance's public origin, as a real deployment does via App__PublicBaseUrl.</summary>
+    public UptimeAppFactory WithPublicBaseUrl(string url)
+    {
+        _publicBaseUrl = url;
+        return this;
+    }
+
+    /// <summary>Captures outbound mail so a test can read the link that was actually sent.</summary>
+    public UptimeAppFactory WithEmailSender(IEmailSender sender)
+    {
+        _emailSender = sender;
+        return this;
+    }
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         Directory.CreateDirectory(_root);
         builder.UseSetting("Storage:DatabasePath", Path.Combine(_root, "test.db"));
         builder.UseSetting("Storage:DataProtectionKeysPath", Path.Combine(_root, "keys"));
+        if (_publicBaseUrl is not null) builder.UseSetting("App:PublicBaseUrl", _publicBaseUrl);
+        if (_allowedHosts is not null) builder.UseSetting("AllowedHosts", _allowedHosts);
         builder.UseEnvironment(Environments.Production);
+
+        if (_emailSender is not null)
+            builder.ConfigureServices(s => s.AddSingleton(_emailSender));
     }
 
     protected override void Dispose(bool disposing)

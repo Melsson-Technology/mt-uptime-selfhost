@@ -133,10 +133,110 @@ previous published version.
 
 ### Security
 
+- **The first-run setup wizard requires a one-time token.** It is printed to the log on first boot and
+  written to `setup-token` in the data directory (mode 0600), and destroyed once the administrator
+  account is created. The wizard mints an Admin and cannot require a login, so without this the only
+  thing standing between a passer-by and ownership of a new instance was arriving second — and the
+  redirect to `/setup` advertises the window to anyone who looks. It also makes the documented
+  account-recovery procedure (delete the rows, redo the wizard) safe to run on a live host.
+- **Sessions can be revoked.** Deleting an account, setting or changing its password, and changing its
+  role now end that account's existing sessions immediately. The auth cookie carries a session stamp that
+  is re-checked on every request and every 30 seconds inside an open interactive circuit. Previously the
+  cookie was entirely self-contained: nothing re-read the account row, so "Delete" and "Set password" —
+  the two remedies the UI offers — left the holder's session working until it expired. A demotion now
+  takes effect at the moment it is made rather than at the demoted user's next sign-in.
+- **A read-only Viewer is no longer shown a push monitor's ping URL.** The token in that URL is a bearer
+  credential: anyone holding it can record an Up beat anonymously, pinning a monitor healthy and
+  suppressing the outage alert it exists to send. It is now built only for Editors and Admins, and never
+  enters the page at all for anyone else.
+- **Push tokens can be rotated.** The monitor editor grows a "Regenerate token" button; the previous URL
+  stops working on save. There was previously no way to withdraw a leaked ping URL short of deleting the
+  monitor and losing its history.
+- **Emailed links come from a configured origin, not the request.** Set `App__PublicBaseUrl` to the
+  instance's public address. Password-reset links were built from the `Host` header, which the caller
+  controls, so someone who knew an account's email address could cause a genuine reset email whose link
+  pointed at a host they owned. Setting it also narrows `AllowedHosts` from `*` to that hostname, so
+  forged `Host` headers are rejected before reaching any handler.
+- **Security response headers on every response** — a Content-Security-Policy with `script-src 'self'`,
+  plus `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy` and `Permissions-Policy`. The
+  script directive is the one that earns its keep: it means an HTML injection anywhere in the app cannot
+  become script execution. It is only affordable because no inline script remains — the two
+  copy-to-clipboard handlers moved into `wwwroot/js/copy-field.js`, and `<ImportMap />` was dropped (see
+  the note in `App.razor` before adding a collocated `.razor.js`). Inline *styles* are still permitted:
+  tag chips colour themselves through a style attribute, and that colour is validated to `#RRGGBB`.
+- **The Blazor circuit endpoint requires authentication.** `/_blazor` and its negotiate endpoint were
+  anonymous, so a caller with no account could open and hold WebSocket connections indefinitely. Every
+  anonymous page in this app is static SSR, so none of them needs a circuit. `/_blazor/initializers`
+  stays anonymous because `blazor.web.js` fetches it on every page load.
+- **`X-Forwarded-For` is trusted from loopback only**, which is exactly the documented nginx deployment.
+  It was previously trusted from any source — correct behind that proxy and wrong everywhere else,
+  including the Docker default. A proxy that is not on loopback is declared with
+  `ForwardedHeaders__KnownProxies`; a malformed value stops the app rather than silently trusting
+  nothing. **Docker Compose now publishes on `127.0.0.1` rather than every interface**, because Kestrel
+  serves plain HTTP.
+- **Public status pages are cached for 15 seconds and no longer rebuild per request.** `/status/{slug}`
+  is anonymous and cost one 30-day heartbeat aggregation per monitor — over a second of SQLite for a
+  20-monitor page, with the page refreshing itself every 60 seconds and nothing rate-limiting it.
+- **`/admin/backup` stages its copy inside the state directory rather than the shared `/tmp`**, and sets
+  the file owner-only. The temporary file is a complete database, and `/tmp` is world-readable.
+- **Failed sign-ins no longer trust `X-Real-IP`** for the logged client address — it is taken from the
+  connection, which `UseForwardedHeaders` has already resolved. The header is caller-controlled, so
+  every logged address was attacker-chosen, and an operator pointing fail2ban at that field would have
+  been handing out a remote ban primitive. The submitted username is also sanitised and length-capped
+  before logging, so control characters cannot rewrite an operator's terminal.
+- **An unknown username now costs the same as a wrong password.** Sign-in returned before hashing when
+  no account matched, which made username existence measurable in a single request and defeated the
+  point of answering identically for every kind of failure.
+- **A monitored target can no longer inflate a check message.** Messages are capped at 1 KB where they
+  are constructed, so every checker inherits it, and the DNS checker now summarises an answer set rather
+  than echoing all of it on a mismatch. That text comes from the monitored host — often the very host
+  whose operator would rather not be alerted — and it is stored per heartbeat, held in memory, and pasted
+  into the alert body. Uncapped, a large enough answer pushed the outbound payload past what Telegram and
+  Discord accept, which meant **the target could suppress the Down alert about its own outage**.
+- **HTTP keyword checks read at most 256 KB of a response.** The body was previously read to completion
+  with headers-only completion in force, so a target answering with `Transfer-Encoding: chunked` and
+  never stopping could stream for the whole check timeout and exhaust memory. A keyword falling past the
+  limit is reported as absent — the safe direction for a monitor.
+- **Database monitors can require and verify TLS.** MySQL and PostgreSQL monitors gain a connection
+  security setting: opportunistic (the drivers' default, and what existing monitors keep), require
+  encryption, verify the certificate chain, or verify chain and hostname. The monitored database's
+  password is sent on every check, and opportunistic encryption resists nothing active — an attacker on
+  the network can strip it or answer in the database's place. **The default is unchanged**, so no
+  existing monitor starts failing; pick a stronger mode per monitor.
+- Dependencies are pinned with committed `packages.lock.json` files, so a given commit restores the same
+  transitive graph for CI, a contributor and a release build alike.
+- **The monitor export carries no credentials.** `/admin/export/monitors` blanks the database password,
+  the HTTP auth secret, the custom header block and the push monitor's ping token. It previously blanked
+  only the first, so an export — a file meant to be copied around — shipped the ping token in the clear.
+  A database backup necessarily still contains everything; treat one as the credentials it carries.
+- **A status page reports its own outage window**, not the correlated incident's. Because an incident
+  groups monitors by shared infrastructure, a page could show "started 01:00 · ongoing" for a five-minute
+  outage while the monitor row beneath it read Operational.
+- **The last-administrator guard is atomic.** Two admins demoting or deleting each other at the same
+  moment could both succeed and leave the instance with no administrator — a state unrepairable from the
+  application. The invariant now rides in the statement itself.
+- **A failed correlation lookup can no longer take a monitor's monitoring down with it.** An over-long
+  hostname raised an exception the resolver did not expect, and it escaped into the heartbeat write,
+  discarding the beat, the event and every notification for that monitor.
+- **"Ignore TLS certificate errors" no longer re-enables redirect following.** The two per-monitor
+  toggles were selecting from three clients, so ticking one silently overrode the other — an application
+  answering 302 to a login page was reported healthy. *Any monitor with both "ignore TLS certificate
+  errors" ticked and "follow redirects" unticked will now correctly stop following redirects, and reports
+  its next check as Down.*
+- **A database password that cannot be decrypted is reported as such**, instead of connecting with a
+  blank one and letting the target answer "Access denied" — which sent operators after a healthy database
+  when the fault was a missing key ring.
+- **The shipped nginx site logs the request path without its query string** and drops the Referer, so a
+  password-reset link's token is no longer written into the access log, where the `adm` group and every
+  log shipper can read it.
 - Endpoints are authenticated by default via an authorization fallback policy; public routes opt out
   explicitly and individually.
-- Rate limiting on the anonymous push-ping endpoint (120/min per IP) and on password reset (5 per 15 min
-  per IP).
+- Rate limiting on the anonymous push-ping endpoint (120/min per IP), on password reset (5 per 15 min
+  per IP), and on sign-in (20 per 5 min per IP — uncapped, it was both an unlimited password oracle and
+  a way for an anonymous caller to burn a small box's CPU in PBKDF2).
+- The systemd unit sets `StateDirectoryMode=0700`, `UMask=0077` and `PrivateTmp=true`, so the data
+  directory and the Data Protection key ring are unreadable by other local accounts however the install
+  was performed, and the temporary file `/admin/backup` stages is not visible outside the service.
 - Password reset answers identically whether or not an address has an account, so it cannot be used to
   enumerate accounts.
 - **Sign-in outcomes are logged** under the `MT.Uptime.Auth` category — successes at information level,

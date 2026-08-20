@@ -166,7 +166,9 @@
             var result = await Retention.RunCleanupAsync();
             _retentionOk = true;
             _retentionMessage =
-                $"Cleanup done — {result.BucketsRolledUp} bucket(s) rolled up, {result.RawHeartbeatsPruned} heartbeat(s) pruned.";
+                $"Cleanup done — {result.BucketsRolledUp} bucket(s) rolled up, "
+                + $"{result.RawHeartbeatsPruned} heartbeat(s) pruned, "
+                + $"{result.IncidentsPruned} incident(s) pruned.";
             UpdateLastRun();
         }
         catch (Exception ex)

@@ -4,6 +4,7 @@ using MT.Uptime.Core.Domain;
 using MT.Uptime.Core.Incidents;
 using MT.Uptime.Core.Maintenance;
 using MT.Uptime.Core.Monitoring;
+using MT.Uptime.Core.StatusPages;
 
 namespace MT.Uptime.Tests;
 
@@ -12,12 +13,23 @@ public class StatusPageIncidentTests
     private static IncidentService Incidents(TestDatabase tdb) =>
         new(tdb,
             new CorrelationKeyResolver(NullLogger<CorrelationKeyResolver>.Instance),
-            Options.Create(new EngineOptions()));
+            Options.Create(new EngineOptions()),
+            NullLogger<IncidentService>.Instance);
 
-    private static async Task<int> SeedStatusPageAsync(TestDatabase tdb, string slug, params int[] monitorIds)
+    private static Task<int> SeedStatusPageAsync(TestDatabase tdb, string slug, params int[] monitorIds)
+        => SeedStatusPageAsync(tdb, slug, published: true, monitorIds);
+
+    /// <summary>
+    /// Overloaded rather than given an optional parameter: C# cannot skip a positional optional argument
+    /// before a <c>params</c> array, so adding <c>bool published = true</c> to the signature above would
+    /// bind every existing <c>SeedStatusPageAsync(tdb, "acme", monitorId)</c> call's third argument to it
+    /// and fail to compile.
+    /// </summary>
+    private static async Task<int> SeedStatusPageAsync(
+        TestDatabase tdb, string slug, bool published, int[] monitorIds)
     {
         await using var db = tdb.CreateDbContext();
-        var page = new StatusPage { Slug = slug, Title = slug, Published = true };
+        var page = new StatusPage { Slug = slug, Title = slug, Published = published };
         db.StatusPages.Add(page);
         await db.SaveChangesAsync();
 
@@ -58,6 +70,37 @@ public class StatusPageIncidentTests
     }
 
     [Fact]
+    public async Task An_unpublished_status_page_is_not_served_by_slug()
+    {
+        // The whole public/private boundary for status pages is one conjunct — `&& sp.Published` in
+        // GetPublishedBySlugAsync — and nothing asserted it at any level. Not exploitable as shipped;
+        // this exists so a refactor that lifts the filter out cannot pass unnoticed.
+        await using var tdb = await TestDatabase.CreateAsync();
+        var monitorId = await tdb.SeedMonitorAsync("acme-web");
+        await SeedStatusPageAsync(tdb, "draft", published: false, [monitorId]);
+
+        var service = new StatusPageService(tdb);
+
+        Assert.Null(await service.GetPublishedBySlugAsync("draft"));
+    }
+
+    [Fact]
+    public async Task A_published_status_page_is_served_by_slug()
+    {
+        // The positive control. Without it the test above passes just as well if the lookup broke for
+        // every page, which would take every customer's status page offline and look like security.
+        await using var tdb = await TestDatabase.CreateAsync();
+        var monitorId = await tdb.SeedMonitorAsync("acme-web");
+        await SeedStatusPageAsync(tdb, "live", published: true, [monitorId]);
+
+        var service = new StatusPageService(tdb);
+        var page = await service.GetPublishedBySlugAsync("live");
+
+        Assert.NotNull(page);
+        Assert.Equal("live", page!.Slug);
+    }
+
+    [Fact]
     public async Task A_status_page_never_names_a_monitor_it_does_not_list()
     {
         // The leak this projection exists to prevent: correlation groups monitors by shared host, which
@@ -77,6 +120,96 @@ public class StatusPageIncidentTests
         Assert.Equal(["acme-web"], incident.AffectedMonitors);
         Assert.DoesNotContain("competitor-web", incident.Headline);
         Assert.Equal("acme-web", incident.Headline);
+    }
+
+    [Fact]
+    public async Task A_status_page_reports_its_own_outage_window_not_the_incidents()
+    {
+        // Acme was down for five minutes; the incident stayed open for three hours because the other
+        // customer on the same host never recovered. Publishing the incident's own timeline made Acme's
+        // page read "started 01:00 · ongoing" above a monitor row saying Operational — overstating their
+        // outage, contradicting itself, and leaking how long somebody else's outage ran.
+        await using var tdb = await TestDatabase.CreateAsync();
+        var mine = await tdb.SeedMonitorAsync("acme-web");
+        var theirs = await tdb.SeedMonitorAsync("competitor-web");
+        var pageId = await SeedStatusPageAsync(tdb, "acme", mine);
+
+        var now = DateTime.UtcNow;
+        var start = now.AddHours(-3);
+        await using (var db = tdb.CreateDbContext())
+        {
+            var incident = new Incident
+            {
+                Title = "competitor-web",
+                StartedAt = start,
+                LastEventAt = start,
+                ResolvedAt = null,                 // still open: their monitor never came back
+                Severity = MonitorStatus.Down,
+                MonitorCount = 2,
+                Published = true,
+            };
+            incident.Events.Add(new MonitorEvent
+            {
+                MonitorId = theirs, StartedAt = start, ResolvedAt = null,
+                FromStatus = MonitorStatus.Up, ToStatus = MonitorStatus.Down,
+            });
+            incident.Events.Add(new MonitorEvent
+            {
+                MonitorId = mine, StartedAt = start.AddMinutes(5), ResolvedAt = start.AddMinutes(10),
+                FromStatus = MonitorStatus.Up, ToStatus = MonitorStatus.Degraded,
+            });
+            db.Incidents.Add(incident);
+            await db.SaveChangesAsync();
+        }
+
+        var shown = Assert.Single(await Incidents(tdb).GetForStatusPageAsync(pageId, now, TimeSpan.FromDays(7)));
+
+        Assert.Equal(start.AddMinutes(5), shown.StartedAt);        // ours started later
+        Assert.Equal(start.AddMinutes(10), shown.ResolvedAt);      // and ended, though the incident has not
+        Assert.False(shown.IsOpen);
+        Assert.Equal(MonitorStatus.Degraded, shown.Severity);      // not the incident-wide Down
+        Assert.Equal(["acme-web"], shown.AffectedMonitors);
+    }
+
+    [Fact]
+    public async Task A_page_whose_own_outage_has_aged_out_stops_showing_the_incident()
+    {
+        // The consequence of scoping the timeline: the linger cutoff has to be re-applied to the page's
+        // own resolution. Otherwise an incident held open by another tenant would pin a notice here for
+        // as long as their outage lasted, however long ago ours ended.
+        await using var tdb = await TestDatabase.CreateAsync();
+        var mine = await tdb.SeedMonitorAsync("acme-web");
+        var theirs = await tdb.SeedMonitorAsync("competitor-web");
+        var pageId = await SeedStatusPageAsync(tdb, "acme", mine);
+
+        var now = DateTime.UtcNow;
+        await using (var db = tdb.CreateDbContext())
+        {
+            var incident = new Incident
+            {
+                Title = "competitor-web",
+                StartedAt = now.AddDays(-30),
+                LastEventAt = now.AddDays(-30),
+                ResolvedAt = null,
+                Severity = MonitorStatus.Down,
+                MonitorCount = 2,
+                Published = true,
+            };
+            incident.Events.Add(new MonitorEvent
+            {
+                MonitorId = theirs, StartedAt = now.AddDays(-30), ResolvedAt = null,
+                FromStatus = MonitorStatus.Up, ToStatus = MonitorStatus.Down,
+            });
+            incident.Events.Add(new MonitorEvent
+            {
+                MonitorId = mine, StartedAt = now.AddDays(-30), ResolvedAt = now.AddDays(-29),
+                FromStatus = MonitorStatus.Up, ToStatus = MonitorStatus.Down,
+            });
+            db.Incidents.Add(incident);
+            await db.SaveChangesAsync();
+        }
+
+        Assert.Empty(await Incidents(tdb).GetForStatusPageAsync(pageId, now, TimeSpan.FromDays(7)));
     }
 
     [Fact]
@@ -133,10 +266,10 @@ public class StatusPageIncidentTests
         var now = DateTime.UtcNow;
         var id = await SeedIncidentAsync(tdb, now.AddMinutes(-30), null, published: true, m);
 
-        Assert.True(await svc.AddUpdateAsync(id, IncidentUpdateKind.Investigating, "Looking into it.", null, now.AddMinutes(-25)));
-        Assert.True(await svc.AddUpdateAsync(id, IncidentUpdateKind.Identified, "Bad deploy.", null, now.AddMinutes(-10)));
+        Assert.True(await svc.AddUpdateAsync(id, UserRole.Editor, IncidentUpdateKind.Investigating, "Looking into it.", null, now.AddMinutes(-25)));
+        Assert.True(await svc.AddUpdateAsync(id, UserRole.Editor, IncidentUpdateKind.Identified, "Bad deploy.", null, now.AddMinutes(-10)));
         // An empty note is refused rather than published as a blank entry.
-        Assert.False(await svc.AddUpdateAsync(id, IncidentUpdateKind.Monitoring, "   ", null, now));
+        Assert.False(await svc.AddUpdateAsync(id, UserRole.Editor, IncidentUpdateKind.Monitoring, "   ", null, now));
 
         var incident = Assert.Single(await svc.GetForStatusPageAsync(pageId, now, TimeSpan.FromDays(7)));
         Assert.Equal(2, incident.Updates.Count);
@@ -156,7 +289,7 @@ public class StatusPageIncidentTests
         var id = await SeedIncidentAsync(tdb, now.AddMinutes(-10), null, published: true, m);
         Assert.Single(await svc.GetForStatusPageAsync(pageId, now, TimeSpan.FromDays(7)));
 
-        Assert.True(await svc.SetPublishedAsync(id, false));
+        Assert.True(await svc.SetPublishedAsync(id, UserRole.Editor, false));
         Assert.Empty(await svc.GetForStatusPageAsync(pageId, now, TimeSpan.FromDays(7)));
     }
 

@@ -136,10 +136,19 @@ public sealed class CorrelationKeyResolver(ILogger<CorrelationKeyResolver> log)
             _cache[host] = new CacheEntry(key, DateTime.UtcNow + PositiveTtl);
             return key;
         }
-        catch (Exception ex) when (ex is SocketException or OperationCanceledException)
+        catch (Exception ex) when (!ct.IsCancellationRequested)
         {
-            // Losing correlation is not worth failing anything over: the incident still opens, it just
-            // groups on the hostname instead of the address.
+            // Everything except shutdown, deliberately. Losing correlation is not worth failing anything
+            // over — the incident still opens, it just groups on the hostname instead of the address —
+            // but an exception escaping here costs the entire heartbeat write and every notification for
+            // that monitor, because both resolve a key before doing anything else. Naming the two
+            // expected failures is precisely what let an unexpected one through: a host of 255 characters
+            // or more makes the resolver throw ArgumentOutOfRangeException rather than SocketException,
+            // and one over-long string in a Host field silently ended all monitoring for that monitor.
+            //
+            // The filter shape is load-bearing. The two-second budget cancels its own linked token, not
+            // the caller's, so a lookup that runs out of time is still caught here and still falls back.
+            // Only the caller's own cancellation — application shutdown — is allowed through.
             log.LogDebug(ex, "Correlation lookup for '{Host}' failed; falling back to the hostname", host);
             _cache[host] = new CacheEntry(fallback, DateTime.UtcNow + NegativeTtl);
             return fallback;
@@ -149,10 +158,21 @@ public sealed class CorrelationKeyResolver(ILogger<CorrelationKeyResolver> log)
     private static async Task<IPAddress[]> DefaultLookupAsync(string host, CancellationToken ct)
         => await Dns.GetHostAddressesAsync(host, ct);
 
+    /// <summary>
+    /// Longest hostname in presentation form, per RFC 1035's 255-octet wire limit. .NET's resolver
+    /// rejects anything longer outright rather than querying it.
+    /// </summary>
+    private const int MaxHostLength = 253;
+
     private static string? Normalize(string? host)
     {
         if (string.IsNullOrWhiteSpace(host)) return null;
         var trimmed = host.Trim().TrimEnd('.');            // "example.com." and "example.com" are one host
-        return trimmed.Length == 0 ? null : trimmed.ToLowerInvariant();
+        // Too long to be a hostname means uncorrelatable, rather than "correlate on whatever string this
+        // is": that fallback key would be quoted in full in every alert for the monitor, and would
+        // outrun what Incident.CorrelationKey is sized for. The broadened catch below would survive it
+        // either way — this keeps it from becoming a lookup at all.
+        if (trimmed.Length is 0 or > MaxHostLength) return null;
+        return trimmed.ToLowerInvariant();
     }
 }

@@ -7,6 +7,8 @@
 @inject MonitorStateService State
 @inject IDbContextFactory<AppDbContext> DbFactory
 @inject NavigationManager Nav
+@inject IAuthorizationService Authorization
+@inject MT.Uptime.Core.Incidents.IncidentService IncidentService
 
 <PageTitle>@(_monitor?.Name ?? "Monitor") — MT-Uptime</PageTitle>
 
@@ -39,6 +41,27 @@ else
             <a href="@($"/monitors/{Id}/edit")" class="btn-secondary">Edit</a>
         </div>
     </div>
+
+    @* The point of correlated incidents, finally reachable from the page you land on when something
+       breaks. Without this the dashboard knows nineteen other monitors went down with this one and the
+       operator staring at this page does not. *@
+    @if (_openIncident is { } incident)
+    {
+        <div class="alert warn incident-banner">
+            <span>
+                <strong>Part of an open incident.</strong>
+                @if (incident.MonitorCount > 1)
+                {
+                    <text>@(incident.MonitorCount - 1) other monitor@(incident.MonitorCount == 2 ? " is" : "s are") affected — this is not just this one.</text>
+                }
+                else
+                {
+                    <text>No other monitor is affected.</text>
+                }
+            </span>
+            <a href="@($"/incidents/{incident.Id}")">View incident</a>
+        </div>
+    }
 
     <div class="stat-cards">
         <div class="stat-card">
@@ -84,9 +107,9 @@ else
                 @if (_pingUrl is not null)
                 {
                     <span class="ping-url">
-                        <input value="@_pingUrl" readonly onclick="this.select()" />
+                        <input value="@_pingUrl" readonly data-select-on-click />
                         <button type="button" class="btn-secondary"
-                                onclick="navigator.clipboard.writeText(this.previousElementSibling.value); this.textContent='Copied!'">Copy</button>
+                                data-copy-previous>Copy</button>
                     </span>
                 }
                 <p class="muted">
@@ -121,16 +144,25 @@ else
         {
             <table class="events">
                 <thead>
-                    <tr><th>When (UTC)</th><th>Change</th><th>Duration</th><th>Reason</th></tr>
+                    <tr><th>When (UTC)</th><th>Change</th><th>Duration</th><th>Reason</th><th>Incident</th></tr>
                 </thead>
                 <tbody>
                     @foreach (var e in _events)
                     {
                         <tr>
-                            <td>@e.StartedAt.ToString("yyyy-MM-dd HH:mm:ss")</td>
-                            <td>@StatusText(e.FromStatus) → @StatusText(e.ToStatus)</td>
-                            <td>@Duration(e)</td>
-                            <td class="reason">@e.Reason</td>
+                            <td data-label="When (UTC)">@e.StartedAt.ToString("yyyy-MM-dd HH:mm:ss")</td>
+                            <td data-label="Change">@StatusText(e.FromStatus) → @StatusText(e.ToStatus)</td>
+                            <td data-label="Duration">@Duration(e)</td>
+                            <td class="reason" data-label="Reason">@e.Reason</td>
+                            @* Empty for events that predate incidents, and for any whose incident has
+                               since been pruned — MonitorEvent.IncidentId is SetNull, so the event
+                               outlives the grouping. *@
+                            <td data-label="Incident">
+                                @if (e.IncidentId is { } linked)
+                                {
+                                    <a href="@($"/incidents/{linked}")">#@linked</a>
+                                }
+                            </td>
                         </tr>
                     }
                 </tbody>
@@ -152,11 +184,35 @@ else
     private IReadOnlyList<string> _beatTitles = [];
     private double? _uptime24, _uptime30;
     private List<MonitorEvent> _events = new();
+
+    /// <summary>
+    /// The incident this monitor is currently part of, or null when it is not in one.
+    /// <para>
+    /// Taken from the most recent event rather than by calling
+    /// <c>IncidentService.FindOpenForMonitorAsync</c>, which resolves the correlation key and would put a
+    /// DNS lookup on a page render. The latest event is already loaded, and if it is unresolved it is by
+    /// definition the one that attached this monitor to whatever is open.
+    /// </para>
+    /// </summary>
+    private Incident? _openIncident;
     private MonitorLiveState? _live;
     private MonitorStatus _liveStatus;
     private string _target = "";
     private string? _pingUrl;
     private int _pushPeriod, _pushGrace;
+
+    [CascadingParameter] private Task<AuthenticationState>? AuthState { get; set; }
+
+    /// <summary>
+    /// Whether the viewer holds Editor or Admin. Resolved against the real policy rather than by reading
+    /// the role claim here, so this cannot drift from the gate on the monitor editor. Fails closed.
+    /// </summary>
+    private async Task<bool> CanManageMonitorsAsync()
+    {
+        if (AuthState is null) return false;
+        var state = await AuthState;
+        return (await Authorization.AuthorizeAsync(state.User, AuthPolicies.Editor)).Succeeded;
+    }
 
     protected override void OnInitialized() => State.Changed += OnChanged;
 
@@ -199,9 +255,17 @@ else
             var pcfg = TryDeserialize<PushMonitorConfig>(_monitor.ConfigJson);
             _pushPeriod = _monitor.IntervalSeconds;
             _pushGrace = pcfg?.GraceSeconds ?? 0;
-            _pingUrl = string.IsNullOrEmpty(pcfg?.Token)
-                ? null
-                : $"{Nav.BaseUri}{PushMonitorManager.PingPathSegment}/{pcfg.Token}";
+
+            // The ping token is a bearer credential: anyone holding the URL can record an Up beat
+            // anonymously, which pins the monitor healthy and suppresses the Down alert that is the whole
+            // point of a push monitor. This page is only [Authorize], so it is reachable by a Viewer —
+            // and a read-only role handing out a write credential is the Viewer→Editor crossing
+            // SECURITY.md undertakes to defend. The URL is therefore built only for Editors and above;
+            // for anyone else it is never computed, so it does not reach the render tree or the SSR
+            // payload where "hidden" markup would still be readable in source.
+            _pingUrl = !string.IsNullOrEmpty(pcfg?.Token) && await CanManageMonitorsAsync()
+                ? $"{Nav.BaseUri}{PushMonitorManager.PingPathSegment}/{pcfg.Token}"
+                : null;
         }
 
         _beats = await Stats.GetRecentHeartbeatsAsync(Id, 60);
@@ -212,6 +276,10 @@ else
         _uptime24 = await Stats.GetUptimeAsync(Id, TimeSpan.FromHours(24));
         _uptime30 = await Stats.GetUptimeAsync(Id, TimeSpan.FromDays(30));
         _events = await Stats.GetEventsAsync(Id, 25);
+
+        _openIncident = _events.FirstOrDefault() is { ResolvedAt: null, IncidentId: { } openId }
+            ? await IncidentService.GetAsync(openId)
+            : null;
 
         _live = State.Get(Id);
         _liveStatus = _live?.Status ?? _monitor.CurrentStatus;

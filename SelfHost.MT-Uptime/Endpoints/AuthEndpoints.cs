@@ -1,9 +1,11 @@
 using System.Net;
+using System.Text;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using MT.Uptime.Core.Notifications;
+using MT.Uptime.Web.Security;
 using MT.Uptime.Web.Services;
 
 namespace MT.Uptime.Web.Endpoints;
@@ -18,6 +20,19 @@ public static class AuthEndpoints
     /// <summary>Rate-limit policy guarding the anonymous reset endpoints (configured in Program.cs).</summary>
     public const string ResetRateLimitPolicy = "password-reset";
 
+    /// <summary>
+    /// Rate-limit policy on <c>/auth/login</c> (configured in Program.cs). Sign-in is anonymous and each
+    /// attempt costs a PBKDF2 verification, so without a cap it is both a free password oracle and a
+    /// cheap way to pin the CPU of a one-vCPU box.
+    /// </summary>
+    public const string LoginRateLimitPolicy = "login";
+
+    /// <summary>
+    /// Claim carrying <see cref="AppUser.SessionStamp"/>. Not a standard claim type, so it is namespaced
+    /// to avoid colliding with anything the framework issues.
+    /// </summary>
+    public const string SessionStampClaim = "mt-uptime:session-stamp";
+
     private const int MinPasswordLength = 8;
     private const int MinUsernameLength = 3;
 
@@ -29,19 +44,41 @@ public static class AuthEndpoints
     private const string AuthLogCategory = "MT.Uptime.Auth";
 
     /// <summary>
-    /// The client address for a sign-in log line. Prefers the proxy's <c>X-Real-IP</c>, because this
-    /// deployment sits behind nginx and the socket address is otherwise always 127.0.0.1 — which would
-    /// make every log line identical and useless for spotting a password-spray.
+    /// The client address for a sign-in log line, taken from the connection after
+    /// <c>UseForwardedHeaders</c> has resolved it — so behind the documented nginx setup this is the real
+    /// caller, and behind nothing it is the real caller too.
     /// </summary>
     private static string ClientOf(HttpContext http)
     {
-        var forwarded = http.Request.Headers["X-Real-IP"].ToString();
-        if (!string.IsNullOrWhiteSpace(forwarded)) return forwarded;
-
-        var chain = http.Request.Headers["X-Forwarded-For"].ToString();
-        if (!string.IsNullOrWhiteSpace(chain)) return chain.Split(',')[0].Trim();
-
+        // Deliberately the connection's address rather than a header. UseForwardedHeaders has already
+        // run and has already replaced this with the forwarded client address *when the immediate peer
+        // is a trusted proxy*; taking X-Real-IP or X-Forwarded-For directly, as this used to, meant
+        // reading a value any caller can set. The result was a log where every client address is
+        // attacker-chosen — and worse, the antiforgery-failure branch logs before any credential check,
+        // so one cookie-less POST forged a line. An operator who then points fail2ban at this field has
+        // handed out a remote ban primitive, including against themselves.
         return http.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+    }
+
+    /// <summary>
+    /// Renders an untrusted value for a log line: printable characters only, and length-capped.
+    /// <para>
+    /// The submitted username reaches the log on an anonymous, and until recently unthrottled, endpoint.
+    /// Console and journald write it as bytes, so ANSI escapes are executed by whatever terminal the
+    /// operator is tailing with — an attacker could emit cursor-up and erase-line sequences and scrub
+    /// their own failed sign-ins off the screen, or forge a plausible success line with a bare CR.
+    /// </para>
+    /// </summary>
+    private static string ForLog(string? value, int maxLength = 64)
+    {
+        if (string.IsNullOrEmpty(value)) return "";
+
+        var truncated = value.Length > maxLength ? value[..maxLength] : value;
+        var clean = new StringBuilder(truncated.Length);
+        foreach (var c in truncated)
+            clean.Append(char.IsControl(c) ? '�' : c);
+
+        return value.Length > maxLength ? clean.Append('…').ToString() : clean.ToString();
     }
 
     public static void MapAuthEndpoints(this IEndpointRouteBuilder app)
@@ -72,16 +109,17 @@ public static class AuthEndpoints
             {
                 // The submitted username is logged; the password never is, not even its length.
                 log.LogWarning("Sign-in failed for username '{Username}' from {Client}: no such account, " +
-                    "or the password did not match", username, ClientOf(http));
+                    "or the password did not match", ForLog(username), ClientOf(http));
                 return Results.Redirect($"/login?error=1{ReturnParam(returnUrl)}");
             }
 
             log.LogInformation("Signed in '{Username}' ({Role}) from {Client}",
-                user.Username, user.Role, ClientOf(http));
+                ForLog(user.Username), user.Role, ClientOf(http));
 
             await SignInAsync(http, user);
             return Results.LocalRedirect(SafeReturn(returnUrl));
-        }).AllowAnonymous();   // signing in is by definition unauthenticated
+        }).RequireRateLimiting(LoginRateLimitPolicy)
+          .AllowAnonymous();   // signing in is by definition unauthenticated
 
         app.MapPost("/auth/logout", async (HttpContext http, IAntiforgery antiforgery) =>
         {
@@ -90,7 +128,9 @@ public static class AuthEndpoints
             return Results.LocalRedirect("/login");
         }).AllowAnonymous();   // signing out must work even from an already-expired session
 
-        app.MapPost("/auth/setup", async (HttpContext http, UserAccountService users, IAntiforgery antiforgery) =>
+        app.MapPost("/auth/setup", async (
+            HttpContext http, UserAccountService users, IAntiforgery antiforgery, SetupToken setupToken,
+            ILoggerFactory loggers) =>
         {
             if (!await ValidAsync(antiforgery, http)) return Results.Redirect("/setup?error=1");
             if (await users.AnyUserExistsAsync()) return Results.LocalRedirect("/login");
@@ -101,12 +141,24 @@ public static class AuthEndpoints
             var password = form["password"].ToString();
             var confirm = form["confirm"].ToString();
 
+            // Checked before the field validation below, so a wrong token cannot be told apart from a
+            // wrong password by which error comes back — and logged, because an attempt here means
+            // somebody found the wizard open.
+            if (!setupToken.Validate(form["setupToken"].ToString()))
+            {
+                loggers.CreateLogger(AuthLogCategory).LogWarning(
+                    "Setup attempt from {Client} rejected: the setup token did not match. The current " +
+                    "token is in this log and at {Path}", ClientOf(http), setupToken.FilePath);
+                return Results.Redirect("/setup?error=token");
+            }
+
             if (username.Length < MinUsernameLength || password.Length < MinPasswordLength
                 || password != confirm || !LooksLikeEmail(email))
                 return Results.Redirect("/setup?error=1");
 
             // First run makes an Admin: there is nobody to promote them later.
             var user = await users.CreateAsync(username, password, email, UserRole.Admin);
+            setupToken.Clear();   // single use: the wizard is now closed for good
             await SignInAsync(http, user);
             return Results.LocalRedirect("/");
         }).AllowAnonymous();   // first-run setup happens before any account exists
@@ -168,7 +220,7 @@ public static class AuthEndpoints
 
         app.MapPost("/auth/forgot", async (
             HttpContext http, UserAccountService users, IEmailSender email, IAntiforgery antiforgery,
-            ILoggerFactory loggerFactory) =>
+            PublicUrl publicUrl, ILoggerFactory loggerFactory) =>
         {
             // Every path below returns the same redirect. Whether the address exists, whether SendGrid is
             // configured, and whether delivery succeeded must all be indistinguishable from outside, or
@@ -182,7 +234,9 @@ public static class AuthEndpoints
             var token = await users.BeginPasswordResetAsync(address);
             if (token is null) return done;
 
-            var link = $"{http.Request.Scheme}://{http.Request.Host}/reset-password?token={WebUtility.UrlEncode(token)}";
+            // Deliberately not Request.Host — see PublicUrl. The recipient's browser goes wherever this
+            // says, carrying a live token, so it must not be decided by the caller who asked for the reset.
+            var link = $"{publicUrl.Origin(http.Request)}/reset-password?token={WebUtility.UrlEncode(token)}";
             var hours = (int)UserAccountService.ResetTokenLifetime.TotalHours;
             var sent = await email.SendAsync(
                 address,
@@ -279,11 +333,14 @@ public static class AuthEndpoints
         {
             new(ClaimTypes.NameIdentifier, user.Id.ToString()),
             new(ClaimTypes.Name, user.DisplayName is { Length: > 0 } d ? d : user.Username),
-            // The role rides in the cookie, so a role change does not take effect until the affected user
-            // signs in again (or an admin's edit re-issues it). That is the standard cookie-auth trade and
-            // is acceptable here — but it means a *demotion* is not immediate, which UserAccountService's
-            // guardrails assume nothing about: they re-check the database on every write.
+            // The role rides in the cookie, so nothing re-reads it per request. That would make a
+            // demotion lag until the next sign-in, except that ChangeRoleAsync bumps the session stamp
+            // below — which ends the session outright, so the stale claim never gets to be used.
             new(ClaimTypes.Role, user.Role.ToString()),
+            // Pairs with UserAccountService.ValidateSessionAsync, called from the cookie handler's
+            // OnValidatePrincipal on every request. This is what makes "Delete" and "Set password"
+            // actually end the target's session rather than merely changing a row.
+            new(SessionStampClaim, user.SessionStamp.ToString()),
         };
         var identity = new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme);
         await http.SignInAsync(
@@ -292,10 +349,31 @@ public static class AuthEndpoints
             new AuthenticationProperties { IsPersistent = true });
     }
 
+    /// <summary>
+    /// A return URL that is safe to hand to <see cref="Results.LocalRedirect"/>.
+    /// <para>
+    /// This paraphrases the framework's local-URL rule and must not drift from it: anything that passes
+    /// here and then fails <c>LocalRedirect</c>'s own check throws <b>after</b> the auth cookie has been
+    /// written, turning a correct sign-in into a 500 with no session. Blocking only <c>//</c> let
+    /// <c>/\evil</c> through, which is exactly that case — a link an attacker can send to deny someone
+    /// their own login.
+    /// </para>
+    /// <para>
+    /// Allowlisted rather than blocklisted: the second character must be an ordinary path character, so
+    /// backslashes, control characters and further slashes are all rejected without enumerating them.
+    /// </para>
+    /// </summary>
     private static string SafeReturn(string? returnUrl)
-        => !string.IsNullOrEmpty(returnUrl) && returnUrl.StartsWith('/') && !returnUrl.StartsWith("//")
-            ? returnUrl
-            : "/";
+    {
+        if (string.IsNullOrEmpty(returnUrl) || returnUrl[0] != '/') return "/";
+        if (returnUrl.Length == 1) return returnUrl;              // "/" itself
+
+        var second = returnUrl[1];
+        if (second == '/' || second == '\\' || char.IsControl(second)) return "/";
+
+        // A backslash or control character anywhere would also be rejected by LocalRedirect's parsing.
+        return returnUrl.Any(c => c == '\\' || char.IsControl(c)) ? "/" : returnUrl;
+    }
 
     private static string ReturnParam(string? returnUrl)
         => string.IsNullOrEmpty(returnUrl) ? "" : $"&returnUrl={Uri.EscapeDataString(returnUrl)}";

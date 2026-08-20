@@ -122,6 +122,11 @@ public class WebhookLoggingTests
     [InlineData(HttpChecker.ClientDefault)]
     [InlineData(HttpChecker.ClientNoRedirect)]
     [InlineData(HttpChecker.ClientInsecure)]
+    // The fourth combination — ignore TLS errors AND do not follow redirects — had no registration at
+    // all, which is why HttpChecker could not select it. CreateClient does not throw on an unknown name;
+    // it returns a plain client that follows redirects and validates certificates, so the gap showed up
+    // as an operator's explicit "don't follow redirects" being quietly ignored rather than as an error.
+    [InlineData(HttpChecker.ClientInsecureNoRedirect)]
     public async Task Every_named_probe_client_can_be_built_too(string name)
     {
         // Same class of failure, same blast radius: a broken probe client means no monitoring at all.

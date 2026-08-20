@@ -31,10 +31,10 @@ else
             {
                 <tr>
                     <td class="name">@c.Name</td>
-                    <td>@c.Type</td>
-                    <td>@(c.IsDefault ? "Yes" : "")</td>
-                    <td>@(c.Enabled ? "Yes" : "No")</td>
-                    <td><a href="@($"/channels/{c.Id}/edit")">Edit</a></td>
+                    <td data-label="Type">@c.Type</td>
+                    <td data-label="Default">@(c.IsDefault ? "Yes" : "")</td>
+                    <td data-label="Enabled">@(c.Enabled ? "Yes" : "No")</td>
+                    <td class="cell-actions"><a href="@($"/channels/{c.Id}/edit")">Edit</a></td>
                 </tr>
             }
         </tbody>

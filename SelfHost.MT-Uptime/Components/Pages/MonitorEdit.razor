@@ -127,6 +127,23 @@
             <InputText @bind-Value="_model.NewPassword" type="password"
                        placeholder="@(_hasStoredPassword ? "•••••• stored — leave blank to keep" : "")" />
         </label>
+        <label>Connection security
+            <InputSelect @bind-Value="_model.DbTls">
+                <option value="Preferred">Opportunistic — encrypt if offered, no verification</option>
+                <option value="Required">Require encryption, no certificate check</option>
+                <option value="VerifyCa">Require encryption, verify the certificate chain</option>
+                <option value="VerifyFull">Require encryption, verify chain and hostname</option>
+            </InputSelect>
+        </label>
+        <p class="muted">
+            The password above is sent to the database on every check. <strong>Opportunistic</strong> is
+            what the drivers do by default and what existing monitors use, but it protects against
+            nothing active — an attacker positioned on the network can strip the encryption and read the
+            credentials, or present any certificate and answer in the database's place. Use it only where
+            you already trust the network (a loopback or private-subnet database). For anything reached
+            across a network you do not control, and for managed cloud databases,
+            <strong>verify chain and hostname</strong>.
+        </p>
     }
     else if (_model.Type == MonitorType.Tls)
     {
@@ -145,12 +162,32 @@
         </p>
         <label>Ping URL
             <span class="ping-url">
-                <input value="@PingUrl" readonly onclick="this.select()" />
+                <input value="@PingUrl" readonly data-select-on-click />
                 <button type="button" class="btn-secondary"
-                        onclick="navigator.clipboard.writeText(this.previousElementSibling.value); this.textContent='Copied!'">Copy</button>
+                        data-copy-previous>Copy</button>
             </span>
         </label>
         <p class="muted">e.g. append <code>&amp;&amp; curl -fsS @PingUrl</code> to your job so it pings only on success.</p>
+        @if (!IsNew)
+        {
+            <p>
+                <button type="button" class="btn-secondary" @onclick="RegenerateToken">Regenerate token</button>
+            </p>
+            @if (_tokenRegenerated)
+            {
+                <div class="alert error">
+                    A new token is shown above and takes effect when you save. The previous URL stops
+                    working at that point — update every job that calls it, or this monitor will go down.
+                </div>
+            }
+            else
+            {
+                <p class="muted">
+                    Treat the URL as a secret. If it has leaked — a shared CI log, a paste, a departing
+                    colleague — regenerate it here, then update the jobs that call it.
+                </p>
+            }
+        }
     }
 
     <div class="row">
@@ -328,6 +365,26 @@
 
     private string PingUrl => $"{Nav.BaseUri}{PushMonitorManager.PingPathSegment}/{_model.PushToken}";
 
+    private bool _tokenRegenerated;
+
+    /// <summary>
+    /// Mints a replacement ping token. Takes effect on save, at which point
+    /// <see cref="PushMonitorManager.Register"/> unregisters the previous one and the old URL stops
+    /// working.
+    /// <para>
+    /// Without this a leaked ping URL could not be withdrawn at all: the only other place a token is
+    /// generated is <c>OnTypeChanged</c>, which cannot fire on an existing monitor because the type
+    /// selector renders only while <c>IsNew</c>. The remaining options were editing ConfigJson in SQLite
+    /// by hand, or deleting the monitor — discarding its heartbeat history, uptime figures and incident
+    /// links. A credential that cannot be rotated is one a leak makes permanent.
+    /// </para>
+    /// </summary>
+    private void RegenerateToken()
+    {
+        _model.PushToken = PushMonitorManager.NewToken();
+        _tokenRegenerated = true;
+    }
+
     private void LoadFrom(Monitor m)
     {
         _model.Type = m.Type;
@@ -369,6 +426,7 @@
                 var c = Deserialize<DbMonitorConfig>(m.ConfigJson);
                 _model.Host = c.Host; _model.Port = c.Port; _model.Database = c.Database; _model.Username = c.Username;
                 _existingDbPassword = c.Password; _hasStoredPassword = !string.IsNullOrEmpty(c.Password);
+                _model.DbTls = c.Tls;
                 break;
             case MonitorType.Tls:
                 var tls = Deserialize<TlsMonitorConfig>(m.ConfigJson);
@@ -507,6 +565,7 @@
             Database = NullIfBlank(_model.Database),
             Username = NullIfBlank(_model.Username),
             Password = ResolvePassword(),
+            Tls = _model.DbTls,
         }),
         MonitorType.Tls => Serialize(new TlsMonitorConfig
         {
@@ -619,6 +678,7 @@
         public string? Database { get; set; }
         public string? Username { get; set; }
         public string? NewPassword { get; set; }
+        public DbTlsMode DbTls { get; set; } = DbTlsMode.Preferred;
 
         // TLS
         public int WarnDays { get; set; } = 14;

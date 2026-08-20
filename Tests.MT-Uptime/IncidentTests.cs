@@ -30,7 +30,8 @@ public class IncidentTests
         };
 
     private static IncidentService Incidents(TestDatabase tdb, CorrelationKeyResolver resolver, int windowMinutes = 10) =>
-        new(tdb, resolver, Options.Create(new EngineOptions { IncidentCorrelationWindowMinutes = windowMinutes }));
+        new(tdb, resolver, Options.Create(new EngineOptions { IncidentCorrelationWindowMinutes = windowMinutes }),
+            NullLogger<IncidentService>.Instance);
 
     private static string HttpConfig(string url) => $$"""{"Url":"{{url}}"}""";
 
@@ -110,6 +111,54 @@ public class IncidentTests
         var r = Resolver([]);
         var key = await r.GetKeyAsync(MonitorType.Http, HttpConfig("https://nowhere.example/"));
         Assert.Equal("host:nowhere.example", key);
+    }
+
+    [Fact]
+    public async Task A_failed_lookup_never_costs_the_heartbeat_or_the_event()
+    {
+        // The decisive one. The resolver used to catch only SocketException and OperationCanceledException,
+        // but .NET rejects an over-long host with ArgumentOutOfRangeException — and that escape landed in
+        // HeartbeatWriter, taking the beat, the event and the incident with it before SaveChangesAsync
+        // ever ran. Reaching the assertions at all is half of what this asserts.
+        await using var tdb = await TestDatabase.CreateAsync();
+        var id = await tdb.SeedMonitorAsync("ssh", MonitorType.Tcp, """{"Host":"a.example.com","Port":22}""");
+        var resolver = new CorrelationKeyResolver(NullLogger<CorrelationKeyResolver>.Instance)
+        {
+            Lookup = (_, _) => throw new ArgumentOutOfRangeException("hostName"),
+        };
+
+        await WriteAsync(tdb, Incidents(tdb, resolver), Down(id, DateTime.UtcNow));
+
+        var incident = Assert.Single(await IncidentsInAsync(tdb));
+        Assert.Equal("host:a.example.com", incident.CorrelationKey);   // the documented fallback
+        Assert.Single(incident.Events);
+    }
+
+    [Fact]
+    public async Task A_host_too_long_to_be_a_name_is_not_correlated()
+    {
+        var r = Resolver(new() { ["a.example.com"] = HostA });
+        var overlong = string.Join('.', Enumerable.Repeat(new string('a', 20), 13));   // 272 characters
+
+        // Positive control first, so this cannot pass by the resolver having stopped resolving anything.
+        Assert.Equal($"ip:{HostA}", await r.GetKeyAsync(MonitorType.Tcp, """{"Host":"a.example.com","Port":22}"""));
+        Assert.Null(await r.GetKeyAsync(MonitorType.Tcp, $$"""{"Host":"{{overlong}}","Port":22}"""));
+    }
+
+    [Fact]
+    public async Task Shutdown_is_the_one_thing_the_resolver_will_not_swallow()
+    {
+        // The catch is deliberately broad, which makes it worth pinning that it stops short of pretending
+        // a cancelled request resolved. The two-second budget cancels its own linked token, not this one.
+        var r = new CorrelationKeyResolver(NullLogger<CorrelationKeyResolver>.Instance)
+        {
+            Lookup = (_, _) => throw new OperationCanceledException(),
+        };
+        using var cancelled = new CancellationTokenSource();
+        await cancelled.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            r.GetKeyAsync(MonitorType.Tcp, """{"Host":"a.example.com","Port":22}""", cancelled.Token));
     }
 
     [Fact]
@@ -284,7 +333,7 @@ public class IncidentTests
         Assert.False((await suppression.EvaluateAsync(Alert(a, t0.AddMinutes(5), NotifyKind.ResendDown))).Suppress);
 
         var incident = Assert.Single(await IncidentsInAsync(tdb));
-        Assert.True(await svc.AcknowledgeAsync(incident.Id, userId: null, t0.AddMinutes(6)));
+        Assert.True(await svc.AcknowledgeAsync(incident.Id, UserRole.Editor, userId: null, t0.AddMinutes(6)));
 
         Assert.True((await suppression.EvaluateAsync(Alert(a, t0.AddMinutes(10), NotifyKind.ResendDown))).Suppress);
     }
@@ -303,8 +352,8 @@ public class IncidentTests
         var t0 = DateTime.UtcNow;
         await WriteAsync(tdb, svc, Down(a, t0));
         var incident = Assert.Single(await IncidentsInAsync(tdb));
-        await svc.AcknowledgeAsync(incident.Id, userId: null, t0.AddMinutes(1));
-        await svc.SnoozeAsync(incident.Id, TimeSpan.FromHours(4), t0.AddMinutes(1));
+        await svc.AcknowledgeAsync(incident.Id, UserRole.Editor, userId: null, t0.AddMinutes(1));
+        await svc.SnoozeAsync(incident.Id, UserRole.Editor, TimeSpan.FromHours(4), t0.AddMinutes(1));
 
         var decision = await suppression.EvaluateAsync(Alert(a, t0.AddMinutes(5), NotifyKind.Up));
         Assert.False(decision.Suppress);
@@ -322,7 +371,7 @@ public class IncidentTests
         var t0 = DateTime.UtcNow;
         await WriteAsync(tdb, svc, Down(a, t0));
         var incident = Assert.Single(await IncidentsInAsync(tdb));
-        await svc.SnoozeAsync(incident.Id, TimeSpan.FromMinutes(30), t0);
+        await svc.SnoozeAsync(incident.Id, UserRole.Editor, TimeSpan.FromMinutes(30), t0);
 
         Assert.True((await suppression.EvaluateAsync(Alert(a, t0.AddMinutes(10), NotifyKind.ResendDown))).Suppress);
         Assert.False((await suppression.EvaluateAsync(Alert(a, t0.AddMinutes(31), NotifyKind.ResendDown))).Suppress);
@@ -344,7 +393,7 @@ public class IncidentTests
         var t0 = DateTime.UtcNow;
         await WriteAsync(tdb, svc, Down(a, t0));
         var incident = Assert.Single(await IncidentsInAsync(tdb));
-        await svc.AcknowledgeAsync(incident.Id, userId: null, t0.AddMinutes(1));
+        await svc.AcknowledgeAsync(incident.Id, UserRole.Editor, userId: null, t0.AddMinutes(1));
 
         Assert.True((await suppression.EvaluateAsync(Alert(b, t0.AddMinutes(2), NotifyKind.Down))).Suppress);
     }
@@ -362,7 +411,7 @@ public class IncidentTests
         var t0 = DateTime.UtcNow;
         await WriteAsync(tdb, svc, Down(a, t0));
         var incident = Assert.Single(await IncidentsInAsync(tdb));
-        await svc.AcknowledgeAsync(incident.Id, userId: null, t0.AddMinutes(1));
+        await svc.AcknowledgeAsync(incident.Id, UserRole.Editor, userId: null, t0.AddMinutes(1));
 
         Assert.False((await suppression.EvaluateAsync(Alert(c, t0.AddMinutes(2), NotifyKind.Down))).Suppress);
     }
@@ -380,7 +429,7 @@ public class IncidentTests
         var incident = Assert.Single(await IncidentsInAsync(tdb));
         Assert.False(incident.IsOpen);
         // Silently succeeding here would let the UI report an acknowledgement that changes nothing.
-        Assert.False(await svc.AcknowledgeAsync(incident.Id, userId: null, t0.AddMinutes(2)));
+        Assert.False(await svc.AcknowledgeAsync(incident.Id, UserRole.Editor, userId: null, t0.AddMinutes(2)));
     }
 
     [Fact]

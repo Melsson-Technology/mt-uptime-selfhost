@@ -7,13 +7,29 @@
     <h1>Welcome to MT-Uptime</h1>
     <p class="muted">Create your administrator account to get started.</p>
 
-    @if (HasError)
+    @if (BadToken)
+    {
+        <div class="alert error">
+            That setup token doesn't match. It was written to the server log when this instance started,
+            and is stored in <code>setup-token</code> in the data directory
+            (<code>/var/lib/mt-uptime</code> on the documented install).
+        </div>
+    }
+    else if (HasError)
     {
         <div class="alert error">Please check your entries — the username needs 3+ characters, the password 8+, both passwords must match, and the email must be valid.</div>
     }
 
     <form method="post" action="/auth/setup" class="form">
         <AntiforgeryToken />
+        <label>Setup token
+            <input name="setupToken" autocomplete="off" required spellcheck="false" />
+        </label>
+        <p class="muted">
+            Proves you can read the server, so that whoever reaches this page first cannot claim the
+            instance. Find it in the startup log — <code>journalctl -u mt-uptime</code>, or
+            <code>docker compose logs</code> — or in <code>setup-token</code> beside the database.
+        </p>
         <label>Username
             <input name="username" autocomplete="username" required minlength="3" />
         </label>
@@ -36,4 +52,5 @@
 @code {
     [SupplyParameterFromQuery(Name = "error")] public string? Error { get; set; }
     private bool HasError => !string.IsNullOrEmpty(Error);
+    private bool BadToken => Error == "token";
 }

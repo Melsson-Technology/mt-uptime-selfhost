@@ -29,7 +29,7 @@ You need a **.NET 10 SDK**, specifically a 10.0.3xx build — `global.json` pins
 you if yours is wrong. Nothing else: no database to install, no services to run, no environment variables.
 
 ```bash
-./scripts/test.sh     # 148 tests, ~10s
+./scripts/test.sh     # 360 tests, under a minute
 ./scripts/run.sh      # http://localhost:5081
 ```
 

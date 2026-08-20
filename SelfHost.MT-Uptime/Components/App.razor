@@ -10,7 +10,18 @@
     <link rel="icon" type="image/png" href="@Assets["img/logo_red_gear.png"]" />
     <link rel="stylesheet" href="@Assets["app.css"]" />
     <link rel="stylesheet" href="@Assets["MT.Uptime.Web.styles.css"]" />
-    <ImportMap />
+    @* <ImportMap /> is deliberately absent.
+       It renders an inline <script type="importmap">, which CSP governs under script-src — so keeping it
+       would force 'unsafe-inline' there and give up the one directive that actually matters, since
+       'unsafe-inline' is what turns any HTML injection into script execution.
+       It is safe to drop *because this app has no dynamic module imports*: its only three scripts are
+       loaded by explicit fingerprinted src (blazor.web.js, js/copy-field.js and js/nav.js), and
+       ReconnectModal.razor.js is referenced the same way rather than imported.
+       IF YOU ADD a collocated `.razor.js` loaded the usual way —
+           await JS.InvokeAsync<IJSObjectReference>("import", "./Components/Thing.razor.js")
+       — the specifier will not resolve to its fingerprinted filename without the import map. Restore
+       <ImportMap /> and give it a per-request nonce that the CSP in Program.cs also emits; do not simply
+       add 'unsafe-inline'. *@
     <title>MT-Uptime</title>
     <HeadOutlet />
 </head>
@@ -19,6 +30,8 @@
     <Routes />
     <ReconnectModal />
     <script src="@Assets["_framework/blazor.web.js"]"></script>
+    <script src="@Assets["js/copy-field.js"]"></script>
+    <script src="@Assets["js/nav.js"]"></script>
 </body>
 
 </html>

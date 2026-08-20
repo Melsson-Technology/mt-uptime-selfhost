@@ -57,9 +57,9 @@ else
             @foreach (var m in Visible)
             {
                 <tr>
-                    <td><span class="dot @DotClass(m)" title="@StatusText(m)"></span></td>
+                    <td class="cell-lead"><span class="dot @DotClass(m)" title="@StatusText(m)"></span></td>
                     <td class="name"><a href="@($"/monitors/{m.MonitorId}")">@m.Name</a></td>
-                    <td>
+                    <td data-label="Tags">
                         <span class="tag-cell">
                             @foreach (var tag in TagsFor(m.MonitorId))
                             {
@@ -67,12 +67,12 @@ else
                             }
                         </span>
                     </td>
-                    <td>@m.Type</td>
-                    <td>@StatusText(m)</td>
-                    <td><HeartbeatBar Statuses="m.Recent" Height="20" BarWidth="4" Gap="1" /></td>
-                    <td>@(m.LastResponseMs is null ? "—" : $"{m.LastResponseMs:0} ms")</td>
-                    <td title="@(m.LastCheckAt?.ToString("u"))">@(m.LastCheckAt is null ? "—" : Relative(m.LastCheckAt.Value))</td>
-                    <td><a href="@($"/monitors/{m.MonitorId}/edit")">Edit</a></td>
+                    <td data-label="Type">@m.Type</td>
+                    <td data-label="Status">@StatusText(m)</td>
+                    <td data-label="History"><HeartbeatBar Statuses="m.Recent" Height="20" BarWidth="4" Gap="1" /></td>
+                    <td data-label="Response">@(m.LastResponseMs is null ? "—" : $"{m.LastResponseMs:0} ms")</td>
+                    <td data-label="Last check" title="@(m.LastCheckAt?.ToString("u"))">@(m.LastCheckAt is null ? "—" : Relative(m.LastCheckAt.Value))</td>
+                    <td class="cell-actions"><a href="@($"/monitors/{m.MonitorId}/edit")">Edit</a></td>
                 </tr>
             }
         </tbody>

@@ -51,4 +51,22 @@ public class AppUser
 
     /// <summary>Expiry of the outstanding reset token. Past this, the token is refused.</summary>
     public DateTime? PasswordResetExpiresAt { get; set; }
+
+    /// <summary>
+    /// Bumped whenever this account's existing sessions must stop working: a password change or reset,
+    /// an admin setting the password, and a role change. The value is stamped into the auth cookie at
+    /// sign-in and re-checked on every request, so a cookie carrying a stale stamp is rejected.
+    /// <para>
+    /// Without this the cookie is entirely self-contained and nothing revokes it — deleting the account
+    /// or changing its password left the old session working until it expired, which made the two
+    /// remedies the UI offers ("Delete" and "Set password") do nothing an attacker would notice.
+    /// </para>
+    /// <para>
+    /// It counts rather than storing a random value so a stale cookie can never collide with a current
+    /// one, and starts at 0 because that is what an un-backfilled row takes — a row created before this
+    /// column existed matches a cookie that carries no stamp claim only if the claim is absent, which
+    /// <c>ValidateSessionAsync</c> treats as a rejection.
+    /// </para>
+    /// </summary>
+    public int SessionStamp { get; set; }
 }

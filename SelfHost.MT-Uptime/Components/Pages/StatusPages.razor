@@ -31,10 +31,10 @@ else
             {
                 <tr>
                     <td class="name">@p.Title</td>
-                    <td>@p.Slug</td>
-                    <td>@(p.Published ? "Yes" : "No")</td>
-                    <td>@if (p.Published) { <a href="@($"/status/{p.Slug}")" target="_blank">View</a> }</td>
-                    <td><a href="@($"/status-pages/{p.Id}/edit")">Edit</a></td>
+                    <td data-label="Slug">@p.Slug</td>
+                    <td data-label="Published">@(p.Published ? "Yes" : "No")</td>
+                    <td data-label="Public page">@if (p.Published) { <a href="@($"/status/{p.Slug}")" target="_blank">View</a> }</td>
+                    <td class="cell-actions"><a href="@($"/status-pages/{p.Id}/edit")">Edit</a></td>
                 </tr>
             }
         </tbody>

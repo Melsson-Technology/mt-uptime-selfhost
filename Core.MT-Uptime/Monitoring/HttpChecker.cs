@@ -13,6 +13,30 @@ public sealed class HttpChecker(IHttpClientFactory httpFactory, ISecretProtector
     public const string ClientDefault = "monitor";
     public const string ClientNoRedirect = "monitor-noredirect";
     public const string ClientInsecure = "monitor-insecure";
+    public const string ClientInsecureNoRedirect = "monitor-insecure-noredirect";
+
+    /// <summary>
+    /// The pooled client for one pair of per-monitor toggles. <c>AddMonitoringEngine</c> registers the
+    /// same four cases from this method, so the checker's choice and the container's registrations
+    /// cannot drift apart.
+    /// <para>
+    /// Both toggles are properties of the primary handler rather than of an individual request — there
+    /// is no way to turn redirect-following off for a single send — so two independent axes have to
+    /// exist as four clients. It is written as one total mapping because the previous form tested
+    /// <c>IgnoreTlsErrors</c> first and stopped there: ticking "ignore TLS certificate errors" quietly
+    /// turned redirect-following back on, so a monitor whose operator had explicitly unticked "follow
+    /// redirects" would follow a 302 to a login page, report Up, and keep the outage invisible. The two
+    /// checkboxes are independent in the editor and have to stay independent here.
+    /// </para>
+    /// </summary>
+    public static string ClientNameFor(bool ignoreTlsErrors, bool followRedirects) =>
+        (ignoreTlsErrors, followRedirects) switch
+        {
+            (false, true) => ClientDefault,
+            (false, false) => ClientNoRedirect,
+            (true, true) => ClientInsecure,
+            (true, false) => ClientInsecureNoRedirect,
+        };
 
     /// <summary>
     /// Sent on every HTTP probe unless the monitor overrides it. A request with no User-Agent looks like
@@ -30,10 +54,7 @@ public sealed class HttpChecker(IHttpClientFactory httpFactory, ISecretProtector
             return CheckResult.Down("No URL configured");
 
         // Per-monitor toggles map to pre-registered handlers (see AddMonitoringEngine).
-        var clientName = cfg.IgnoreTlsErrors ? ClientInsecure
-                       : cfg.FollowRedirects ? ClientDefault
-                       : ClientNoRedirect;
-        var client = httpFactory.CreateClient(clientName);
+        var client = httpFactory.CreateClient(ClientNameFor(cfg.IgnoreTlsErrors, cfg.FollowRedirects));
 
         var sw = Stopwatch.StartNew();
         HttpRequestMessage? req = null;
@@ -49,7 +70,7 @@ public sealed class HttpChecker(IHttpClientFactory httpFactory, ISecretProtector
 
             string? body = null;
             if (!string.IsNullOrEmpty(cfg.Keyword))
-                body = await resp.Content.ReadAsStringAsync(ct);
+                body = await ReadBodyPrefixAsync(resp, ct);
 
             sw.Stop();
             var ms = sw.Elapsed.TotalMilliseconds;
@@ -173,12 +194,59 @@ public sealed class HttpChecker(IHttpClientFactory httpFactory, ISecretProtector
         }
     }
 
+    /// <summary>
+    /// How much of a response body is read to search for the keyword. Generous for a health endpoint or
+    /// a status page, and bounded — which is the point.
+    /// </summary>
+    private const int MaxBodyBytes = 256 * 1024;
+
+    /// <summary>
+    /// Reads at most <see cref="MaxBodyBytes"/> of the response body.
+    /// <para>
+    /// This used to be <c>ReadAsStringAsync</c>, which reads until the response ends. The response comes
+    /// from the monitored host — a party outside the trust boundary — and the request is sent with
+    /// <see cref="HttpCompletionOption.ResponseHeadersRead"/>, so a target answering with
+    /// <c>Transfer-Encoding: chunked</c> and never stopping could stream for the whole check timeout
+    /// (30 s by default) and take the process out with an OutOfMemoryException. On a 1 GB box that is
+    /// every monitor stopping, the queued heartbeats and notifications lost with the process, and a
+    /// restart straight back into the same monitor. Note <c>MaxResponseContentBufferSize</c> is inert
+    /// under ResponseHeadersRead, so the limit has to be applied here.
+    /// </para>
+    /// <para>
+    /// A keyword split across the cut-off is treated as absent. That is the safe direction: the check
+    /// reports Down and an operator investigates, rather than a truncated read silently reporting Up.
+    /// </para>
+    /// </summary>
+    private static async Task<string> ReadBodyPrefixAsync(HttpResponseMessage resp, CancellationToken ct)
+    {
+        await using var stream = await resp.Content.ReadAsStreamAsync(ct);
+
+        var buffer = new byte[MaxBodyBytes];
+        var total = 0;
+        while (total < buffer.Length)
+        {
+            var read = await stream.ReadAsync(buffer.AsMemory(total, buffer.Length - total), ct);
+            if (read == 0) break;
+            total += read;
+        }
+
+        // Decoded with the charset the response declares, falling back to UTF-8. Truncating at a byte
+        // boundary can leave a partial multi-byte sequence at the tail; GetString substitutes a
+        // replacement character rather than throwing, which is fine for a substring search.
+        var encoding = Encoding.UTF8;
+        var charset = resp.Content.Headers.ContentType?.CharSet;
+        if (!string.IsNullOrWhiteSpace(charset))
+        {
+            try { encoding = Encoding.GetEncoding(charset.Trim('"')); }
+            catch (ArgumentException) { /* unknown charset — UTF-8 is the better guess than failing */ }
+        }
+
+        return encoding.GetString(buffer, 0, total);
+    }
+
     private static HttpMonitorConfig Deserialize(string json)
     {
         try { return JsonSerializer.Deserialize<HttpMonitorConfig>(json) ?? new(); }
         catch { return new(); }
     }
 }
-
-/// <summary>Thrown when a monitor's stored credential cannot be decrypted with the current key ring.</summary>
-public sealed class SecretUnreadableException(string message, Exception inner) : Exception(message, inner);

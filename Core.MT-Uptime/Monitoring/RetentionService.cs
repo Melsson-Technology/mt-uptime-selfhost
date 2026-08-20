@@ -17,7 +17,9 @@ namespace MT.Uptime.Core.Monitoring;
 ///   <item>rolls completed raw heartbeats up into hourly + daily <see cref="StatRollup"/> buckets
 ///         (so long-range uptime survives pruning),</item>
 ///   <item>prunes raw <see cref="Heartbeat"/> rows older than the retention window in batches
-///         (short write locks, never one giant DELETE), and prunes stale hourly rollups, then</item>
+///         (short write locks, never one giant DELETE), and prunes stale hourly rollups,</item>
+///   <item>prunes resolved <see cref="Domain.Incident"/>s past their own, much longer window, along
+///         with any incident left with no members by a deleted monitor, then</item>
 ///   <item><c>wal_checkpoint(TRUNCATE)</c> + <c>incremental_vacuum</c> to actually return freed pages
 ///         to the OS (a full <c>VACUUM</c> is deliberately avoided — it rewrites the whole file).</item>
 /// </list>
@@ -67,14 +69,16 @@ public sealed class RetentionService(
         {
             var rolled = await RollUpAsync(ct);
             var (rawDeleted, hourlyDeleted) = await PruneAsync(ct);
-            if (rawDeleted > 0 || hourlyDeleted > 0)
+            var incidentsDeleted = await PruneIncidentsAsync(ct);
+            if (rawDeleted > 0 || hourlyDeleted > 0 || incidentsDeleted > 0)
                 await CheckpointAndVacuumAsync(ct);
 
             LastRunUtc = DateTime.UtcNow;
             LastRunSummary =
-                $"{rolled} bucket(s) rolled up · {rawDeleted} heartbeat(s) pruned · {hourlyDeleted} hourly bucket(s) pruned";
+                $"{rolled} bucket(s) rolled up · {rawDeleted} heartbeat(s) pruned · "
+                + $"{hourlyDeleted} hourly bucket(s) pruned · {incidentsDeleted} incident(s) pruned";
             log.LogInformation("Retention run complete: {Summary}", LastRunSummary);
-            return new RetentionRunResult(rolled, rawDeleted, hourlyDeleted);
+            return new RetentionRunResult(rolled, rawDeleted, hourlyDeleted, incidentsDeleted);
         }
         finally { _runLock.Release(); }
     }
@@ -212,6 +216,42 @@ public sealed class RetentionService(
         return (rawDeleted, hourlyDeleted);
     }
 
+    /// <summary>
+    /// Prunes incidents, which nothing did until now — <see cref="Domain.Incident"/> and
+    /// <see cref="Domain.IncidentUpdate"/> grew for the life of the install. Two separate jobs:
+    /// <list type="number">
+    ///   <item><b>Resolved incidents past the window.</b> Open ones are never touched at any age.</item>
+    ///   <item><b>Incidents with no members left.</b> Deleting a monitor cascades its
+    ///         <see cref="Domain.MonitorEvent"/>s, which can empty an incident of everything it grouped
+    ///         — including an open one, which then sits on <c>/incidents</c> as a permanent entry with
+    ///         nothing under it and no way to clear it.</item>
+    /// </list>
+    /// <para>
+    /// The member-less sweep carries an hour's grace it does not strictly need. A committed incident with
+    /// no events should be impossible otherwise — <c>AttachAsync</c> adds the incident and its first event
+    /// in the same <c>SaveChangesAsync</c>, so no other connection ever observes the intermediate state —
+    /// but the cost of that reasoning being wrong is deleting a live incident during an outage, and the
+    /// cost of the grace is that a ghost row lingers for an hour.
+    /// </para>
+    /// </summary>
+    private async Task<long> PruneIncidentsAsync(CancellationToken ct)
+    {
+        var resolvedCutoff = DateTime.UtcNow.AddDays(-Math.Max(1, _options.IncidentRetentionDays));
+        var orphanCutoff = DateTime.UtcNow.AddHours(-1);
+
+        await using var db = await factory.CreateDbContextAsync(ct);
+
+        var aged = await db.Incidents
+            .Where(i => i.ResolvedAt != null && i.ResolvedAt < resolvedCutoff)
+            .ExecuteDeleteAsync(ct);
+
+        var orphaned = await db.Incidents
+            .Where(i => !i.Events.Any() && i.StartedAt < orphanCutoff)
+            .ExecuteDeleteAsync(ct);
+
+        return aged + orphaned;
+    }
+
     // --- Reclaim disk -------------------------------------------------------------------------
 
     private async Task CheckpointAndVacuumAsync(CancellationToken ct)
@@ -240,4 +280,5 @@ public sealed class RetentionService(
 }
 
 /// <summary>Outcome of one <see cref="RetentionService.RunCleanupAsync"/> cycle.</summary>
-public sealed record RetentionRunResult(int BucketsRolledUp, long RawHeartbeatsPruned, long HourlyBucketsPruned);
+public sealed record RetentionRunResult(
+    int BucketsRolledUp, long RawHeartbeatsPruned, long HourlyBucketsPruned, long IncidentsPruned);

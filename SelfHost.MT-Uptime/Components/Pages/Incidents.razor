@@ -37,7 +37,7 @@ else
             @foreach (var i in _open)
             {
                 <tr @key="i.Id">
-                    <td><span class="dot @StatusDisplay.DotClass(i.Severity)" title="@StatusDisplay.Text(i.Severity)"></span></td>
+                    <td class="cell-lead"><span class="dot @StatusDisplay.DotClass(i.Severity)" title="@StatusDisplay.Text(i.Severity)"></span></td>
                     <td class="name">
                         <a href="@($"/incidents/{i.Id}")">@Headline(i)</a>
                         @if (i.CorrelationKey is not null)
@@ -45,10 +45,10 @@ else
                             <span class="muted"> · @Infrastructure(i)</span>
                         }
                     </td>
-                    <td>@MonitorList(i)</td>
-                    <td title="@i.StartedAt.ToString("u")">@Relative(i.StartedAt)</td>
-                    <td>@StateText(i)</td>
-                    <td>
+                    <td data-label="Monitors">@MonitorList(i)</td>
+                    <td data-label="Started" title="@i.StartedAt.ToString("u")">@Relative(i.StartedAt)</td>
+                    <td data-label="State">@StateText(i)</td>
+                    <td class="cell-actions">
                         <AuthorizeView Policy="@AuthPolicies.Editor">
                             @if (i.AcknowledgedAt is null)
                             {
@@ -91,11 +91,11 @@ else
             @foreach (var i in _recent)
             {
                 <tr @key="i.Id">
-                    <td><span class="dot @StatusDisplay.DotClass(i.Severity)"></span></td>
+                    <td class="cell-lead"><span class="dot @StatusDisplay.DotClass(i.Severity)"></span></td>
                     <td class="name"><a href="@($"/incidents/{i.Id}")">@Headline(i)</a></td>
-                    <td>@MonitorList(i)</td>
-                    <td title="@i.StartedAt.ToString("u")">@Relative(i.StartedAt)</td>
-                    <td>@(i.DurationSeconds is { } d ? Duration(d) : "ongoing")</td>
+                    <td data-label="Monitors">@MonitorList(i)</td>
+                    <td data-label="Started" title="@i.StartedAt.ToString("u")">@Relative(i.StartedAt)</td>
+                    <td data-label="Lasted">@(i.DurationSeconds is { } d ? Duration(d) : "ongoing")</td>
                 </tr>
             }
         </tbody>
@@ -130,17 +130,29 @@ else
             : null;
     }
 
+    /// <summary>
+    /// The caller's role, passed to every mutating call so the service can refuse on its own account.
+    /// The &lt;AuthorizeView&gt; around these buttons is still the gate; this is what makes the gate's
+    /// correctness stop being the only thing holding the boundary up. Resolves to Viewer if anything is
+    /// missing — see <see cref="PrincipalRole"/>.
+    /// </summary>
+    private async Task<UserRole> ActingRoleAsync()
+        => AuthState is null ? UserRole.Viewer : (await AuthState).User.RoleOrViewer();
+
     private async Task AckAsync(long id)
     {
-        await ApplyAsync(await IncidentService.AcknowledgeAsync(id, await CurrentUserIdAsync(), DateTime.UtcNow));
+        await ApplyAsync(await IncidentService.AcknowledgeAsync(
+            id, await ActingRoleAsync(), await CurrentUserIdAsync(), DateTime.UtcNow));
     }
 
-    private async Task UnackAsync(long id) => await ApplyAsync(await IncidentService.UnacknowledgeAsync(id));
+    private async Task UnackAsync(long id)
+        => await ApplyAsync(await IncidentService.UnacknowledgeAsync(id, await ActingRoleAsync()));
 
     private async Task SnoozeAsync(long id, TimeSpan duration)
-        => await ApplyAsync(await IncidentService.SnoozeAsync(id, duration, DateTime.UtcNow));
+        => await ApplyAsync(await IncidentService.SnoozeAsync(id, await ActingRoleAsync(), duration, DateTime.UtcNow));
 
-    private async Task ClearSnoozeAsync(long id) => await ApplyAsync(await IncidentService.ClearSnoozeAsync(id));
+    private async Task ClearSnoozeAsync(long id)
+        => await ApplyAsync(await IncidentService.ClearSnoozeAsync(id, await ActingRoleAsync()));
 
     /// <summary>
     /// A false result means the incident closed while the page was open — the row the user clicked is

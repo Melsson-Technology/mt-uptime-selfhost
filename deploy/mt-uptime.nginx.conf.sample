@@ -11,10 +11,30 @@ map $http_upgrade $connection_upgrade {
     ''      close;
 }
 
+# Strip the query string from the logged request line.
+#
+# A password-reset link is /reset-password?token=<live credential>, and nginx's default `combined`
+# format logs the full request line — so following a reset link writes a working account-takeover token
+# into /var/log/nginx/access.log, where it is readable by root and the `adm` group (which in practice
+# includes log shippers and junior operations accounts) for as long as that log is kept. The token is
+# single-use and expires in an hour, but log retention is measured in weeks and a reset the operator
+# never completes leaves it live for the full hour.
+#
+# $uri is the decoded path with the query string already removed, so this keeps everything an access log
+# is actually used for — path, status, size, timing, user agent — and drops only the part that carries
+# the credential. The Referer is dropped for the same reason: a reset page's subresource requests would
+# otherwise carry the token there too.
+log_format mt_uptime_scrubbed
+    '$remote_addr - $remote_user [$time_local] "$request_method $uri $server_protocol" '
+    '$status $body_bytes_sent "-" "$http_user_agent"';
+
 server {
     listen      80;
     listen      [::]:80;
     server_name uptime.example.com;
+
+    access_log /var/log/nginx/mt-uptime.access.log mt_uptime_scrubbed;
+    error_log  /var/log/nginx/mt-uptime.error.log;
 
     # HSTS. Certbot adds `listen 443 ssl` to *this* server block and splits the plain :80 traffic into a
     # separate redirect-only block, so this header ends up being served over TLS where it takes effect.

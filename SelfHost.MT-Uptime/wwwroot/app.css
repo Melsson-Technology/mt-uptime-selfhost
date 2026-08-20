@@ -239,3 +239,269 @@ table.events td.reason { color: var(--muted); max-width: 360px; overflow: hidden
 .tag-filter .btn-tag.on { border-color: var(--brand); background: #eef3fe; color: var(--brand); font-weight: 600; }
 .tag-filter .btn-tag .swatch { display: inline-block; width: 9px; height: 9px; border-radius: 50%; }
 .tag-filter .count { color: var(--muted); font-size: .72rem; }
+
+/* ==========================================================================
+   Responsive layout
+   --------------------------------------------------------------------------
+   Mobile matters here more than a traffic share would suggest: the moment this
+   product is useful is the moment something is down, and that is rarely at a
+   desk. Three pages have to survive a phone — the dashboard, the monitor
+   detail page, and the public status page a customer opens during an outage.
+
+   Breakpoints are tied to the thing that actually stops fitting, not to device
+   names:
+     1000px — the topbar still fits, but only once its spacing is tightened.
+      900px — the nav no longer fits on one line and the nine-column tables no
+              longer fit at all. Both change shape here.
+      560px — the status page's one-line rows and the stat cards give way.
+      420px — the label column inside a stacked table row has to yield.
+   ========================================================================== */
+
+/* Nothing may make the document wider than the viewport. Sideways scroll makes
+   every tap land slightly wrong, and it is the single failure that makes an
+   otherwise fine layout feel broken. */
+html { -webkit-text-size-adjust: 100%; }
+img, svg { max-width: 100%; }
+
+/* Textareas were never styled, so they rendered in the browser default
+   monospace beside inputs that inherit the page font. Cosmetic on a desktop;
+   on a phone they also need the 16px treatment below. */
+.form textarea {
+    padding: .5rem .6rem; border: 1px solid var(--border); border-radius: 6px;
+    font: inherit; background: #fff; color: var(--text); width: 100%; resize: vertical;
+}
+
+/* The hamburger. Rendered unconditionally by the layout and hidden here, so the
+   markup does not have to know where the breakpoint is. */
+.nav-toggle {
+    display: none;
+    align-items: center;
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: .45rem .55rem;
+    color: var(--text);
+    cursor: pointer;
+}
+.nav-toggle svg { fill: currentColor; display: block; }
+.nav-toggle:hover { border-color: var(--muted); }
+
+@media (max-width: 1000px) {
+    /* Buys roughly 65px, which is the difference between the full nav fitting
+       and collapsing a breakpoint earlier than it needs to. */
+    .topbar { gap: 1rem; padding: 0 1rem; }
+    .nav { gap: .75rem; }
+    .nav a { font-size: .9rem; }
+}
+
+@media (max-width: 900px) {
+
+    /* --- Topbar: nav and account collapse behind the toggle ---------------
+       The bar wraps rather than scrolls, and the two hidden blocks each take a
+       full line of their own. Opening is a data-nav-open attribute set by
+       js/nav.js: the layout is statically rendered, so it has no @onclick to
+       toggle a field with. */
+    .topbar {
+        flex-wrap: wrap;
+        height: auto;
+        min-height: 56px;
+        padding: .55rem 1rem;
+        gap: .5rem;
+    }
+    .brand { margin-right: auto; }
+    .nav-toggle { display: inline-flex; }
+
+    .nav, .user { display: none; flex-basis: 100%; }
+    .topbar[data-nav-open] .nav { display: flex; flex-direction: column; gap: 0; }
+    .topbar[data-nav-open] .user { display: flex; }
+
+    .nav a { padding: .8rem .15rem; border-top: 1px solid var(--border); color: var(--text); }
+    .user {
+        margin-left: 0;
+        justify-content: space-between;
+        padding: .8rem .15rem .3rem;
+        border-top: 1px solid var(--border);
+    }
+
+    .content { padding: 1.1rem 1rem 2rem; }
+
+    /* --- Page headers ---------------------------------------------------- */
+    .page-header { flex-wrap: wrap; gap: .75rem; align-items: flex-start; }
+    /* Without min-width:0 a long monitor name refuses to wrap and widens the
+       whole flex line past the viewport. */
+    .page-header > div { min-width: 0; }
+    .page-header h1 { overflow-wrap: anywhere; }
+    .actions { flex-wrap: wrap; }
+
+    /* --- Wide tables become cards ----------------------------------------
+       Nine columns do not fit 375px by any amount of squeezing, and a
+       sideways-scrolling table pushes the one column that matters — status —
+       off the screen. So each row becomes a card, and each cell carries its own
+       column heading in data-label, which is what lets the header row go away. */
+    table.monitors, table.monitors thead, table.monitors tbody,
+    table.monitors tr, table.monitors th, table.monitors td,
+    table.events, table.events thead, table.events tbody,
+    table.events tr, table.events th, table.events td { display: block; }
+
+    table.monitors, table.events { border: none; background: none; overflow: visible; }
+
+    /* Visually hidden rather than display:none — a screen reader still
+       announces the column headings, and display:none would remove them. */
+    table.monitors thead, table.events thead {
+        position: absolute; width: 1px; height: 1px;
+        overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+    }
+
+    table.monitors tr, table.events tr {
+        position: relative;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: .7rem .85rem;
+        margin-bottom: .6rem;
+    }
+
+    table.monitors td, table.events td {
+        border-bottom: none;
+        padding: .25rem 0;
+        display: flex;
+        gap: .75rem;
+        align-items: baseline;
+        min-width: 0;
+        overflow-wrap: anywhere;
+    }
+    table.monitors td::before, table.events td::before {
+        content: attr(data-label);
+        flex: 0 0 6.5rem;
+        color: var(--muted);
+        font-size: .7rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: .03em;
+    }
+    /* A cell that rendered nothing — an unpublished status page's View link —
+       would otherwise leave a labelled blank line in the card. */
+    table.monitors td:empty, table.events td:empty { display: none; }
+
+    /* The name is the card title, so it takes the full width and drops its
+       label. The right padding keeps it clear of the status dot opposite. */
+    table.monitors td.name {
+        display: block;
+        font-size: 1.02rem;
+        padding: 0 1.6rem .2rem 0;
+        margin-bottom: .2rem;
+    }
+    table.monitors td.name::before { content: none; }
+
+    /* The leading dot column has no heading and duplicates the status text, so
+       it becomes a corner marker rather than a row of its own. */
+    table.monitors td.cell-lead {
+        position: absolute;
+        top: .8rem;
+        right: .85rem;
+        padding: 0;
+    }
+    table.monitors td.cell-lead::before { content: none; }
+
+    /* Row actions sit on their own line under a rule, which is where a card
+       puts them and also gives the links room to be tapped. */
+    table.monitors td.cell-actions, table.events td.cell-actions {
+        border-top: 1px solid var(--border);
+        margin-top: .45rem;
+        padding-top: .55rem;
+        gap: 1.25rem;
+        flex-wrap: wrap;
+    }
+    table.monitors td.cell-actions::before, table.events td.cell-actions::before { content: none; }
+    table.monitors td.cell-actions a, table.monitors td.cell-actions button { padding: .2rem 0; }
+
+    /* Set on the desktop table to keep a long reason on one line; in a card
+       there is nowhere for the rest of the text to go but downwards. */
+    table.events td.reason { max-width: none; white-space: normal; overflow: visible; }
+
+    /* --- Forms and hit targets -------------------------------------------
+       16px is not a style choice: iOS Safari zooms the whole page in when a
+       focused field's text is smaller than that, and it does not zoom back. */
+    .form input:not([type=checkbox]), .form select, .form textarea, .ping-url input {
+        font-size: 16px;
+        min-height: 44px;
+        max-width: 100%;
+    }
+    .form input[type=checkbox] { width: 1.15rem; height: 1.15rem; }
+    .form input[type=color] { min-height: 38px; padding: .2rem; }
+    .form label.check { align-items: flex-start; gap: .6rem; }
+
+    .btn, .btn-secondary, .btn-danger {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 44px;
+        padding: .6rem 1rem;
+    }
+    .tag-filter .btn-tag { padding: .45rem .7rem; font-size: .82rem; }
+
+    /* flex:1 alone still will not shrink an input below its content width. */
+    .ping-url { flex-wrap: wrap; }
+    .ping-url input { min-width: 0; }
+
+    /* --- Definition grids -------------------------------------------------
+       max-content in the first column is what pushes this page sideways: a
+       resolved IP or a long UTC timestamp sets the column width. */
+    .detail-grid { grid-template-columns: 1fr; gap: 0; }
+    .detail-grid dt { margin-top: .6rem; font-weight: 600; }
+    .detail-grid dd { overflow-wrap: anywhere; }
+
+    /* --- Auth and public status ------------------------------------------- */
+    .auth-card { margin: 1.25rem auto; padding: 1.25rem; }
+    .status-wrap { margin: 1.5rem auto; padding: 0 1rem; }
+    .status-head h1 { font-size: 1.35rem; }
+
+    .stat-cards { gap: .6rem; }
+    .stat-card { flex: 1 1 130px; padding: .6rem .8rem; }
+
+    .panel { padding: .9rem 1rem; }
+    .monitor-picker { padding: .7rem .85rem; }
+    .day-picker { gap: .5rem .9rem; }
+}
+
+@media (max-width: 560px) {
+    /* The status page row is name / uptime / status on one line. Below this the
+       uptime figure wraps under the name instead of crushing all three. */
+    .status-list li { flex-wrap: wrap; padding: .75rem .85rem; }
+    .status-list .s-name { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+    /* The status word stays on the name's line — it is what the reader came for — and the
+       uptime figure is what drops. `order` is needed because the uptime span comes
+       first in the DOM, so a plain flex-basis:100% on it would push the status to a
+       third line instead of pulling itself down to the second. */
+    .status-list .s-status { order: 2; flex: 0 0 auto; min-width: 0; margin-left: auto; text-align: right; white-space: nowrap; }
+    .status-list .s-uptime { order: 3; flex-basis: 100%; margin-left: 1.75rem; }
+    .status-foot { flex-wrap: wrap; gap: .35rem; }
+    .status-banner { padding: .8rem .7rem; }
+
+    .stat-card { flex: 1 1 calc(50% - .3rem); min-width: 0; }
+    .page-header .btn, .page-header .btn-secondary { width: 100%; }
+    .actions .btn, .actions .btn-secondary, .actions .btn-danger { flex: 1 1 auto; }
+    .form { padding: 1rem; }
+    .auth-card { margin: .75rem auto; }
+}
+
+@media (max-width: 420px) {
+    /* The heartbeat bar is ~250px wide and shares its line with a label. On the
+       narrowest phones the label gives up the space rather than letting the bar
+       shrink to a smear. */
+    table.monitors td::before, table.events td::before { flex-basis: 4.75rem; }
+    .content { padding: 1rem .75rem 2rem; }
+    .topbar { padding: .55rem .75rem; }
+    .status-wrap { padding: 0 .75rem; }
+}
+
+/* Incident banner on the monitor detail page. The .alert classes carry no margin of their own
+   because they normally sit inside a .form, whose gap spaces them. */
+.incident-banner {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: .35rem .75rem;
+    margin-bottom: 1.25rem;
+}
+.incident-banner a { white-space: nowrap; }

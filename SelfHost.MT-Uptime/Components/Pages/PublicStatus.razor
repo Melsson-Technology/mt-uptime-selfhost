@@ -5,14 +5,15 @@
 @inject MonitorStatsService Stats
 @inject MT.Uptime.Core.Incidents.IncidentService IncidentService
 @inject MT.Uptime.Core.Maintenance.MaintenanceWindowService Maintenance
+@inject PublicStatusCache Cache
 
-<PageTitle>@(_page?.Title ?? "Status")</PageTitle>
+<PageTitle>@(_view?.Title ?? "Status")</PageTitle>
 <HeadContent>
     <meta http-equiv="refresh" content="60" />
 </HeadContent>
 
 <div class="status-wrap">
-    @if (_page is null)
+    @if (_view is null)
     {
         <p class="muted">This status page is not available.</p>
     }
@@ -20,10 +21,10 @@
     {
         <header class="status-head">
             <img src="@Assets["img/logo_red_gear.png"]" alt="" class="status-logo" />
-            <h1>@_page.Title</h1>
-            @if (!string.IsNullOrWhiteSpace(_page.Description))
+            <h1>@_view.Title</h1>
+            @if (!string.IsNullOrWhiteSpace(_view.Description))
             {
-                <p class="muted">@_page.Description</p>
+                <p class="muted">@_view.Description</p>
             }
         </header>
 
@@ -31,11 +32,11 @@
             @BannerText
         </div>
 
-        @if (_maintenance.Count > 0)
+        @if (_view.Maintenance.Count > 0)
         {
             <section class="status-section">
                 <h2>Scheduled maintenance</h2>
-                @foreach (var m in _maintenance)
+                @foreach (var m in _view.Maintenance)
                 {
                     <article class="status-notice @(m.InProgress ? "in-progress" : "")">
                         <h3>@m.Name</h3>
@@ -52,11 +53,11 @@
             </section>
         }
 
-        @if (_incidents.Count > 0)
+        @if (_view.Incidents.Count > 0)
         {
             <section class="status-section">
                 <h2>Incidents</h2>
-                @foreach (var i in _incidents)
+                @foreach (var i in _view.Incidents)
                 {
                     <article class="status-notice @(i.IsOpen ? "open" : "resolved")">
                         <h3>
@@ -96,14 +97,14 @@
             </section>
         }
 
-        @if (_items.Count == 0)
+        @if (_view.Items.Count == 0)
         {
             <p class="muted">No monitors are shown on this page.</p>
         }
         else
         {
             <ul class="status-list">
-                @foreach (var item in _items)
+                @foreach (var item in _view.Items)
                 {
                     <li>
                         <span class="dot @DotClass(item.Status)"></span>
@@ -125,12 +126,7 @@
 @code {
     [Parameter] public string Slug { get; set; } = "";
 
-    private StatusPage? _page;
-    private readonly List<Item> _items = new();
-    private List<MT.Uptime.Core.Incidents.PublicIncident> _incidents = new();
-    private List<MT.Uptime.Core.Incidents.PublicMaintenance> _maintenance = new();
-    private bool _anyDown;
-    private bool _anyDegraded;
+    private View? _view;
 
     /// <summary>How long a resolved incident stays on the page, so a reader arriving late still sees it.</summary>
     private static readonly TimeSpan ResolvedIncidentsShownFor = TimeSpan.FromDays(7);
@@ -138,50 +134,74 @@
     /// <summary>How far ahead scheduled maintenance is announced.</summary>
     private static readonly TimeSpan MaintenanceHorizon = TimeSpan.FromDays(14);
 
+    /// <summary>
+    /// Everything the page renders, assembled once and cached. Holding only projections here — never the
+    /// StatusPage entity or an Incident — keeps the disclosure boundary intact by construction: nothing
+    /// with a navigation property to another customer's monitors survives into the cache or the markup.
+    /// </summary>
+    private sealed record View(
+        string Title,
+        string? Description,
+        IReadOnlyList<Item> Items,
+        IReadOnlyList<MT.Uptime.Core.Incidents.PublicIncident> Incidents,
+        IReadOnlyList<MT.Uptime.Core.Incidents.PublicMaintenance> Maintenance,
+        bool AnyDown,
+        bool AnyDegraded);
+
     protected override async Task OnParametersSetAsync()
     {
-        _items.Clear();
-        _incidents = [];
-        _maintenance = [];
-        _anyDown = false;
-        _anyDegraded = false;
+        var now = DateTime.UtcNow;
 
-        _page = await Pages.GetPublishedBySlugAsync(Slug);
-        if (_page is null) return;
+        // Anonymous and internet-facing, so the cost of building this is bounded per slug rather than
+        // per request. See PublicStatusCache.
+        var view = await Cache.GetOrBuildAsync(Slug, () => BuildAsync(now), now);
 
-        foreach (var spm in _page.Monitors.OrderBy(m => m.SortOrder))
+        _view = view;
+    }
+
+    private async Task<View?> BuildAsync(DateTime now)
+    {
+        var page = await Pages.GetPublishedBySlugAsync(Slug);
+        if (page is null) return null;
+
+        var items = new List<Item>();
+        var anyDown = false;
+        var anyDegraded = false;
+
+        foreach (var spm in page.Monitors.OrderBy(m => m.SortOrder))
         {
             var mon = spm.Monitor;
             if (mon is null) continue;
             var uptime = await Stats.GetUptimeAsync(mon.Id, TimeSpan.FromDays(30));
-            _items.Add(new Item(mon.Name, mon.CurrentStatus, uptime));
-            if (mon.CurrentStatus == MonitorStatus.Down) _anyDown = true;
-            if (mon.CurrentStatus == MonitorStatus.Degraded) _anyDegraded = true;
+            items.Add(new Item(mon.Name, mon.CurrentStatus, uptime));
+            if (mon.CurrentStatus == MonitorStatus.Down) anyDown = true;
+            if (mon.CurrentStatus == MonitorStatus.Degraded) anyDegraded = true;
         }
 
-        var now = DateTime.UtcNow;
-
         // Projected per page — see PublicIncident on why the entity must not be rendered here.
-        _incidents = await IncidentService.GetForStatusPageAsync(_page.Id, now, ResolvedIncidentsShownFor);
+        var incidents = await IncidentService.GetForStatusPageAsync(page.Id, now, ResolvedIncidentsShownFor);
 
-        var monitorIds = _page.Monitors.Select(m => m.MonitorId).ToList();
-        _maintenance = [.. (await Maintenance.UpcomingForAsync(monitorIds, now, MaintenanceHorizon))
+        var monitorIds = page.Monitors.Select(m => m.MonitorId).ToList();
+        var maintenance = (await Maintenance.UpcomingForAsync(monitorIds, now, MaintenanceHorizon))
             .Select(m => new MT.Uptime.Core.Incidents.PublicMaintenance(
-                m.Window.Name, m.Window.Description, m.StartsAt, m.EndsAt, m.InProgress))];
+                m.Window.Name, m.Window.Description, m.StartsAt, m.EndsAt, m.InProgress))
+            .ToList();
+
+        return new View(page.Title, page.Description, items, incidents, maintenance, anyDown, anyDegraded);
     }
 
-    private bool MaintenanceInProgress => _maintenance.Any(m => m.InProgress);
+    private bool MaintenanceInProgress => _view?.Maintenance.Any(m => m.InProgress) == true;
 
     // Maintenance outranks both, because during planned work a red banner is alarming and wrong — the
     // work was announced. Below that, an outage outranks a slowdown: if anything is down, say so rather
     // than softening it to "degraded". Per-monitor state stays visible in the list either way.
-    private string BannerClass => MaintenanceInProgress ? "degraded" : _anyDown ? "bad" : _anyDegraded ? "degraded" : "ok";
+    private string BannerClass => MaintenanceInProgress ? "degraded" : _view?.AnyDown == true ? "bad" : _view?.AnyDegraded == true ? "degraded" : "ok";
 
     private string BannerText => MaintenanceInProgress
         ? "Scheduled maintenance in progress"
-        : _anyDown
+        : _view?.AnyDown == true
             ? "Some systems are experiencing issues"
-            : _anyDegraded
+            : _view?.AnyDegraded == true
                 ? "All systems operational, some responding slowly"
                 : "All systems operational";
 

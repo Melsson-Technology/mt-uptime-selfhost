@@ -43,6 +43,26 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             e.HasIndex(u => u.Username).IsUnique();
             e.Property(u => u.DisplayName).HasMaxLength(256);
             e.Property(u => u.Email).HasMaxLength(320);              // max length of an email address per RFC 5321
+            // NOCASE and unique, for the same reasons as Username above. Email is what
+            // BeginPasswordResetAsync resolves an account by, so both properties are load-bearing:
+            //
+            //   Uniqueness — two accounts sharing an address makes "reset the password for this email"
+            //   ambiguous, and the resolution was an unordered FirstOrDefaultAsync. Nothing escalated,
+            //   because the administrator is row 1 and SQLite's AUTOINCREMENT never reuses a rowid, so
+            //   the first match was always the same row. But that is an accident of insertion order
+            //   holding up an authentication boundary, not a rule, and it is one index change away from
+            //   mattering. The statement is now ordered as well — see BeginPasswordResetAsync — so the
+            //   invariant does not rest on the index alone either.
+            //
+            //   NOCASE — an operator who registers "Matt@example.com" and later types
+            //   "matt@example.com" would otherwise get the deliberately vague "if that address exists,
+            //   we sent a link" and never receive one. That is the same silent failure the username
+            //   collation fixed, on the one path that exists to recover an account nobody can sign in to.
+            //
+            // NULL is exempt: SQLite treats NULLs as distinct in a unique index, so any number of
+            // accounts may have no address at all. That is deliberate — an email is optional here.
+            e.Property(u => u.Email).UseCollation("NOCASE");
+            e.HasIndex(u => u.Email).IsUnique();
             e.Property(u => u.PasswordResetTokenHash).HasMaxLength(64); // hex SHA-256
         });
 

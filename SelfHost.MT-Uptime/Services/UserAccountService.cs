@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.AspNetCore.Identity;
@@ -15,7 +16,32 @@ public sealed class UserAccountService(IDbContextFactory<AppDbContext> factory, 
     /// <summary>How long a reset link stays valid. Short, because the account it protects is the admin.</summary>
     public static readonly TimeSpan ResetTokenLifetime = TimeSpan.FromHours(1);
 
+    /// <summary>
+    /// Backstop lifetime for a cached session stamp. Every write that revokes sessions goes through this
+    /// singleton and evicts the entry directly, so this only bounds staleness from a change made *outside*
+    /// the app — someone editing the database by hand, which is the documented break-glass path.
+    /// </summary>
+    private static readonly TimeSpan StampCacheLifetime = TimeSpan.FromSeconds(30);
+
     private volatile bool _anyUserCached;
+
+    /// <summary>
+    /// userId → (current stamp, when this entry goes stale). Read on every authenticated request, so it
+    /// exists to keep <see cref="ValidateSessionAsync"/> off the database on the hot path. A miss costs
+    /// one indexed lookup; a revoking write evicts the entry, so revocation is immediate rather than
+    /// waiting out <see cref="StampCacheLifetime"/>.
+    /// </summary>
+    private readonly ConcurrentDictionary<int, (int Stamp, DateTime ExpiresAt)> _stampCache = new();
+
+    /// <summary>
+    /// A throwaway account and hash used to burn the same KDF time when no user matched, so an unknown
+    /// username cannot be told from a wrong password by how long the answer took. Computed once from
+    /// fresh randomness — the value never has to verify against anything, it only has to cost the same.
+    /// </summary>
+    private static readonly AppUser DummyUser = new() { Username = "" };
+
+    private readonly string DummyHash = hasher.HashPassword(
+        DummyUser, Convert.ToHexString(RandomNumberGenerator.GetBytes(32)));
 
     public async Task<bool> AnyUserExistsAsync(CancellationToken ct = default)
     {
@@ -52,7 +78,15 @@ public sealed class UserAccountService(IDbContextFactory<AppDbContext> factory, 
     {
         await using var db = await factory.CreateDbContextAsync(ct);
         var user = await db.Users.FirstOrDefaultAsync(u => u.Username == username, ct);
-        if (user is null) return null;
+        if (user is null)
+        {
+            // Verify against a throwaway hash before giving up. Returning here directly costs one indexed
+            // lookup (~1 ms) while a real username costs a PBKDF2 verification (~80 ms), and that 80x gap
+            // is a username oracle needing no statistics and one probe per candidate — which defeats the
+            // whole point of the login page answering identically for every kind of failure.
+            hasher.VerifyHashedPassword(DummyUser, DummyHash, password);
+            return null;
+        }
 
         if (hasher.VerifyHashedPassword(user, user.PasswordHash, password) == PasswordVerificationResult.Failed)
             return null;
@@ -103,6 +137,15 @@ public sealed class UserAccountService(IDbContextFactory<AppDbContext> factory, 
         if (await db.Users.AnyAsync(u => u.Username == username, ct))
             return "That username is already taken.";
 
+        // Same shape as the username check above, and needed for the same reason: Email carries a unique
+        // index, so without this an admin who reuses an address gets a DbUpdateException out of
+        // CreateAsync rather than a sentence explaining what they typed wrong. Neither check is the
+        // guard — the index is, and it is what holds if two admins race — but a constraint violation is
+        // not an error message.
+        var normalisedEmail = NullIfBlank(email);
+        if (normalisedEmail is not null && await db.Users.AnyAsync(u => u.Email == normalisedEmail, ct))
+            return "That email address is already in use by another account.";
+
         var user = await CreateAsync(username, password, email, role, ct);
 
         if (!string.IsNullOrWhiteSpace(displayName))
@@ -119,23 +162,41 @@ public sealed class UserAccountService(IDbContextFactory<AppDbContext> factory, 
     /// <summary>
     /// Changes an account's role. Returns an error message, or null on success.
     /// <para>
-    /// Refuses to demote the last Admin. That check and the write are in the same
-    /// <c>DbContext</c>/transaction, so two admins demoting each other concurrently cannot both pass —
-    /// SQLite serializes the writes, and the second one re-counts after the first has committed.
+    /// Refuses to demote the last Admin — see <see cref="UnlessLastAdmin"/> for why that refusal rides
+    /// in the <c>UPDATE</c> itself rather than being checked beforehand.
     /// </para>
     /// </summary>
     public async Task<string?> ChangeRoleAsync(int userId, UserRole role, CancellationToken ct = default)
     {
         await using var db = await factory.CreateDbContextAsync(ct);
-        var user = await db.Users.FirstOrDefaultAsync(u => u.Id == userId, ct);
-        if (user is null) return "Account not found.";
-        if (user.Role == role) return null;
+        var current = await db.Users
+            .AsNoTracking()
+            .Where(u => u.Id == userId)
+            .Select(u => (UserRole?)u.Role)
+            .FirstOrDefaultAsync(ct);
+        if (current is null) return "Account not found.";
+        // Re-selecting the role an account already holds stays a silent no-op, and has to be settled
+        // before the write: the sole Admin's own row fails the guard below by construction, so without
+        // this the dropdown would report an error for a change nobody asked for.
+        if (current == role) return null;
 
-        if (user.Role == UserRole.Admin && await IsLastAdminAsync(db, userId, ct))
+        var changed = await UnlessLastAdmin(db, userId).ExecuteUpdateAsync(s => s
+            .SetProperty(u => u.Role, role)
+            // The role is a cookie claim, so without this a demotion would not bind until the affected
+            // user happened to sign in again. Bumping the stamp ends their session instead, which is the
+            // only way the change takes effect at the moment it is made. The database computes the
+            // increment rather than a tracked entity, so a concurrent bump cannot be read stale and
+            // written back over.
+            .SetProperty(u => u.SessionStamp, u => u.SessionStamp + 1), ct);
+
+        // Zero rows is the refusal. It also covers the account being deleted between the two statements,
+        // which this message reads slightly wrong for — the page reloads the list either way.
+        if (changed == 0)
             return "This is the only administrator. Promote someone else first, or the instance would be left with no way to manage accounts.";
 
-        user.Role = role;
-        await db.SaveChangesAsync(ct);
+        // Evicted after the write, not before it: the new stamp is committed by the time this runs, so
+        // the next reader repopulates from it rather than re-caching the value it just superseded.
+        _stampCache.TryRemove(userId, out _);
         return null;
     }
 
@@ -149,14 +210,17 @@ public sealed class UserAccountService(IDbContextFactory<AppDbContext> factory, 
         if (userId == actingUserId) return "You cannot delete your own account.";
 
         await using var db = await factory.CreateDbContextAsync(ct);
-        var user = await db.Users.FirstOrDefaultAsync(u => u.Id == userId, ct);
-        if (user is null) return "Account not found.";
+        var deleted = await UnlessLastAdmin(db, userId).ExecuteDeleteAsync(ct);
+        if (deleted == 0)
+            // Only the refusal path pays for telling the two cases apart, so the ordinary delete stays
+            // a single statement.
+            return await db.Users.AnyAsync(u => u.Id == userId, ct)
+                ? "This is the only administrator and cannot be deleted."
+                : "Account not found.";
 
-        if (user.Role == UserRole.Admin && await IsLastAdminAsync(db, userId, ct))
-            return "This is the only administrator and cannot be deleted.";
-
-        db.Users.Remove(user);
-        await db.SaveChangesAsync(ct);
+        // ValidateSessionAsync already fails closed on a missing row, but the cache would otherwise keep
+        // answering from the deleted account's last known stamp until the entry aged out.
+        _stampCache.TryRemove(userId, out _);
         return null;
     }
 
@@ -173,13 +237,75 @@ public sealed class UserAccountService(IDbContextFactory<AppDbContext> factory, 
 
         user.PasswordHash = hasher.HashPassword(user, newPassword);
         ClearResetToken(user);
+        RevokeSessions(user);
         await db.SaveChangesAsync(ct);
         return null;
     }
 
-    /// <summary>True when <paramref name="userId"/> is the only account holding <see cref="UserRole.Admin"/>.</summary>
-    private static async Task<bool> IsLastAdminAsync(AppDbContext db, int userId, CancellationToken ct)
-        => !await db.Users.AnyAsync(u => u.Id != userId && u.Role == UserRole.Admin, ct);
+    /// <summary>
+    /// Narrows a query to <paramref name="userId"/>, but only while removing that account's Admin role
+    /// would leave another Admin behind.
+    /// <para>
+    /// The invariant rides in the statement's <c>WHERE</c> clause instead of being checked first because
+    /// a check and a write are two statements on two connections: two admins demoting or deleting each
+    /// other at the same moment both pass the check, both are told it worked, and the instance is left
+    /// with no administrator at all. That state cannot be repaired from the application — managing
+    /// accounts requires an Admin, and first-run setup will not offer to help because accounts still
+    /// exist. As one statement SQLite serialises the writers, so the second re-evaluates the
+    /// <c>EXISTS</c> against the first's committed result and matches nothing.
+    /// </para>
+    /// <para><b>Zero rows affected is the refusal</b>, and callers must read it as one.</para>
+    /// </summary>
+    private static IQueryable<AppUser> UnlessLastAdmin(AppDbContext db, int userId)
+        => db.Users.Where(u => u.Id == userId
+            && (u.Role != UserRole.Admin || db.Users.Any(o => o.Id != userId && o.Role == UserRole.Admin)));
+
+    // --- Session validity ---------------------------------------------------------------------------
+
+    /// <summary>
+    /// Whether a cookie presented by <paramref name="userId"/> carrying <paramref name="stamp"/> is still
+    /// good. False when the account has been deleted, or when anything since sign-in bumped the stamp
+    /// (password change or reset, an admin setting the password, a role change).
+    /// <para>
+    /// This runs on every authenticated request, so it answers from <see cref="_stampCache"/> where it
+    /// can. Fails closed: an account that cannot be read is not authenticated.
+    /// </para>
+    /// </summary>
+    public async Task<bool> ValidateSessionAsync(int userId, int stamp, CancellationToken ct = default)
+    {
+        if (_stampCache.TryGetValue(userId, out var cached) && cached.ExpiresAt > DateTime.UtcNow)
+            return cached.Stamp == stamp;
+
+        await using var db = await factory.CreateDbContextAsync(ct);
+        var current = await db.Users
+            .AsNoTracking()
+            .Where(u => u.Id == userId)
+            .Select(u => (int?)u.SessionStamp)
+            .FirstOrDefaultAsync(ct);
+
+        // Deleted account. Drop any cached entry so a later re-creation at the same id cannot inherit it.
+        if (current is null)
+        {
+            _stampCache.TryRemove(userId, out _);
+            return false;
+        }
+
+        _stampCache[userId] = (current.Value, DateTime.UtcNow + StampCacheLifetime);
+        return current.Value == stamp;
+    }
+
+    /// <summary>
+    /// Invalidates every existing session for an account by advancing its stamp. Call this on the same
+    /// tracked entity as the change that motivated it, so the bump and the change commit together — a
+    /// password that changed without the bump would leave the old cookie working.
+    /// </summary>
+    private void RevokeSessions(AppUser user)
+    {
+        user.SessionStamp++;
+        // Evict rather than update: the write has not committed yet, and a concurrent reader must not
+        // see the new stamp until it has. The next read repopulates from the committed row.
+        _stampCache.TryRemove(user.Id, out _);
+    }
 
     // --- Profile ---------------------------------------------------------------------------------
 
@@ -197,6 +323,13 @@ public sealed class UserAccountService(IDbContextFactory<AppDbContext> factory, 
 
         if (await db.Users.AnyAsync(u => u.Id != userId && u.Username == username, ct))
             return "That username is already taken.";
+
+        // Excludes this account, so re-saving your own profile without touching the address is not a
+        // collision with yourself. See AddUserAsync for why the check exists alongside the index.
+        var normalisedEmail = NullIfBlank(email);
+        if (normalisedEmail is not null
+            && await db.Users.AnyAsync(u => u.Id != userId && u.Email == normalisedEmail, ct))
+            return "That email address is already in use by another account.";
 
         user.Username = username;
         user.DisplayName = NullIfBlank(displayName);
@@ -222,6 +355,7 @@ public sealed class UserAccountService(IDbContextFactory<AppDbContext> factory, 
 
         user.PasswordHash = hasher.HashPassword(user, newPassword);
         ClearResetToken(user);
+        RevokeSessions(user);
         await db.SaveChangesAsync(ct);
         return null;
     }
@@ -239,7 +373,14 @@ public sealed class UserAccountService(IDbContextFactory<AppDbContext> factory, 
         if (email.Length == 0) return null;
 
         await using var db = await factory.CreateDbContextAsync(ct);
-        var user = await db.Users.FirstOrDefaultAsync(u => u.Email != null && u.Email == email, ct);
+        // Ordered explicitly. A unique index on Email now makes more than one match impossible, but this
+        // statement is what decides which account a reset link recovers, and "whichever row the engine
+        // returned first" is not a rule — it held only because the administrator happened to be row 1.
+        // Both halves are cheap; relying on either one alone is what made this worth writing down.
+        var user = await db.Users
+            .Where(u => u.Email != null && u.Email == email)
+            .OrderBy(u => u.Id)
+            .FirstOrDefaultAsync(ct);
         if (user is null) return null;
 
         // 256 bits, URL-safe. Only its hash is stored, so a database copy cannot be turned into a reset.
@@ -266,6 +407,7 @@ public sealed class UserAccountService(IDbContextFactory<AppDbContext> factory, 
 
         user.PasswordHash = hasher.HashPassword(user, newPassword);
         ClearResetToken(user);
+        RevokeSessions(user);
         await db.SaveChangesAsync(ct);
         return null;
     }

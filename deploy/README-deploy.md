@@ -1,6 +1,12 @@
 # Deploying MT-Uptime (Linux, no Docker)
 
-Target: a small Linux VM — Ubuntu 22.04/24.04 or Amazon Linux 2023. It runs comfortably on 1 vCPU / 1 GB.
+Target: a small Linux VM. It runs comfortably on 1 vCPU / 1 GB.
+
+`provision.sh` is **Debian/Ubuntu only** — every package step is `apt-get`, and it refuses immediately on
+anything else rather than half-provisioning a host it cannot finish. It has been run end to end on
+Ubuntu 26.04. The application itself is not distro-specific: on Fedora, RHEL, Amazon Linux or anything
+else, follow sections 1–6 below, which are the manual equivalent and differ only in the package
+commands.
 Examples below use **uptime.example.com**; substitute your own hostname.
 
 ## The short version
@@ -19,7 +25,17 @@ tar -xzf mt-uptime.tar.gz && cd deploy
 sudo ./provision.sh uptime.example.com    # user, runtime, nginx, systemd unit, state dir
 sudo ./deploy-on-server.sh ~/mt-uptime.tar.gz
 sudo certbot --nginx -d uptime.example.com
+
+# The wizard asks for a one-time token, generated on first start:
+sudo cat /var/lib/mt-uptime/setup-token
 ```
+
+Then open `https://uptime.example.com/` and complete the wizard, pasting that token. It exists because
+the wizard mints an administrator and cannot require a login — it runs before any account exists — so
+without it whoever reaches the page first between deploy and your finishing the form becomes the
+administrator. Requesting a certificate publishes the hostname to Certificate Transparency logs, which
+are scanned within seconds, so "nobody knows this host yet" is not true. The token is destroyed once
+your account exists.
 
 And for every deploy after that, just the last two lines — `deploy-on-server.sh` swaps the build
 atomically, keeps the previous one as `publish.old` for rollback, and fails loudly if `/healthz` does not
@@ -161,6 +177,56 @@ down once `IntervalSeconds + GraceSeconds` elapse with no ping.
 - **Rate limit:** 120 requests/minute per client IP, returning `429` with `Retry-After`. Legitimate
   pinging is nowhere near this, but if many push jobs share one NAT egress IP, count them against the cap.
 
+## Backup and restore
+
+`/var/lib/mt-uptime` holds the SQLite database **and** the Data Protection keys that decrypt every
+secret inside it. They are one unit. A database without its keys starts, migrates and reports healthy
+while unable to read a single stored credential — silently — so backing up only the `.db` file leaves
+you with something that looks like a backup and is not one.
+
+```bash
+# A directory only root can enter. NOT /tmp: the archive contains the key ring, and on a shared host a
+# readable copy of that decrypts every stored secret and allows auth-cookie forgery.
+sudo install -d -m 0700 /var/backups/mt-uptime
+
+# Stopping first is what makes the snapshot consistent: SQLite checkpoints the WAL into the database on
+# a clean shutdown, so you capture one file rather than a database plus a half-applied log.
+sudo systemctl stop mt-uptime
+sudo tar czf /var/backups/mt-uptime/mt-uptime-$(date -u +%Y%m%dT%H%M%SZ).tar.gz -C /var/lib mt-uptime
+sudo systemctl start mt-uptime
+
+# Recursive rather than a glob: `sudo chmod 600 /var/backups/mt-uptime/*.tar.gz` looks equivalent and
+# fails, because your shell expands the glob as *you* before sudo runs, and you cannot list a 0700
+# root-owned directory. It reports "No such file or directory" for a file that is sitting right there.
+sudo chmod -R go-rwx /var/backups/mt-uptime
+```
+
+The stop/start costs a few seconds of monitoring. If you would rather not stop the service, use
+`/admin/backup` in the UI instead — it uses SQLite's online-backup API and is safe against a live
+writer — but note that it captures **the database only**, so you must archive `keys/` separately and
+keep the two together.
+
+Then get it off the box. A backup that only exists on the machine it protects is not a backup:
+
+```bash
+scp -i <key.pem> user@host:/var/backups/mt-uptime/mt-uptime-<stamp>.tar.gz .
+```
+
+### Restoring
+
+```bash
+sudo systemctl stop mt-uptime
+sudo tar xzf mt-uptime-<stamp>.tar.gz -C /var/lib
+sudo chown -R mtuptime:mtuptime /var/lib/mt-uptime   # the service user from section 2 — no hyphen
+sudo systemctl start mt-uptime
+```
+
+**Perform a restore once, deliberately, before you need one** — ideally onto a scratch machine. Until it
+has been done, a backup is a hypothesis. The specific thing worth confirming is not that the app starts,
+but that a stored secret still decrypts: open a notification channel and press **Send test**. If the key
+ring came back with the database, it sends; if it did not, the app will look perfectly healthy and the
+send will fail.
+
 ## Account recovery when email is unavailable
 
 Password reset sends a link to the address on the admin account, so it needs **both** an email set on the
@@ -171,13 +237,25 @@ The escape hatch is to delete the single admin row: the app then treats the next
 shows the setup wizard again. **Monitors, history, and the Data Protection keys are all preserved** — only
 the login is recreated.
 
+> **The wizard is gated by a one-time token, so this is safe to do on a live host.** On finding no
+> accounts, the app writes a fresh token to `/var/lib/mt-uptime/setup-token` (mode 0600) and prints it to
+> the log. Completing the wizard requires it, so an internet-facing instance in first-run state cannot be
+> claimed by whoever reaches `/setup` first. Without that gate this procedure would hand a populated
+> instance — keys included — to any passer-by who noticed the redirect to `/setup`.
+
 ```bash
 sudo systemctl stop mt-uptime
 sudo -u mtuptime sqlite3 /var/lib/mt-uptime/mt-uptime.db "DELETE FROM Users;"
 sudo systemctl start mt-uptime
+
+# The new setup token. Straight off disk is exact; the log form has to extract it, because journald
+# renders the whole message on a single line and `grep -A2` shows the next two log entries instead.
+sudo cat /var/lib/mt-uptime/setup-token
+sudo journalctl -u mt-uptime --since "1 min ago" | grep -oP 'one-time token:\s+\K[0-9a-f]+' | tail -1
 ```
 
-Then browse to the dashboard and complete the wizard. Set an email address this time so reset works.
+Then browse to the dashboard and complete the wizard, pasting that token. Set an email address this time
+so reset works. The token is destroyed as soon as the account is created.
 
 > Note: `/auth/forgot` deliberately answers identically whether or not the address exists, so a broken mail
 > setup looks the same as success in the browser. It logs an error when delivery fails — check

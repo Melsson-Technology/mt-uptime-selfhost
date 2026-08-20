@@ -69,10 +69,20 @@ case — this is the property that matters most, and it is the one you cannot ad
 
 ```bash
 git clone https://git.melssontechnology.com/Melsson-Technology/mt-uptime-selfhost.git
-cd mt-uptime-selfhost/docker && docker compose up -d
+cd mt-uptime-selfhost/docker
+docker compose up -d
 ```
 
-Open <http://localhost:5081/> and complete the setup wizard.
+Open <http://localhost:5081/> and complete the setup wizard. It asks for a **one-time setup token**,
+printed at first start:
+
+```bash
+docker compose logs | grep -A2 "one-time token"
+```
+
+That token is what stops whoever reaches the page first from claiming the instance — an empty user
+table is not authorization, and a new host is discoverable within seconds of its certificate being
+issued. It is also written to `setup-token` in the data volume, and destroyed once your account exists.
 
 **No prebuilt image is published yet**, so Compose builds one from this repository the first time —
 a few minutes, and Docker is the only thing you need installed. The `Dockerfile` targets both
@@ -95,8 +105,10 @@ cd mt-uptime-selfhost
 ./scripts/run.sh          # or .\scripts\run.ps1 on Windows
 ```
 
-Then open <http://localhost:5081> and complete the setup wizard. That's it — the database is created on
-first run, and there's nothing else to configure.
+Then open <http://localhost:5081> and complete the setup wizard, which asks for the **one-time setup
+token** printed in the console at first start (and written to `setup-token` beside the database). That
+is the only thing you have to fetch by hand — the database is created on first run and there is nothing
+else to configure.
 
 To run the tests:
 

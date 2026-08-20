@@ -32,6 +32,25 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 [[ $EUID -eq 0 ]] || { echo "must run as root (try: sudo $0 $HOSTNAME_ARG)" >&2; exit 1; }
 
+# Refuse up front on anything that is not Debian/Ubuntu, rather than partway through.
+#
+# Every package operation below is apt-get, with no distro detection. On a dnf system this used to run
+# far enough to create the service user and both directories, then die at the first `apt-get update`
+# with "command not found" — leaving a half-provisioned host and an error that says nothing about why.
+# README-deploy listed Amazon Linux 2023 as a supported target for a script that could never have
+# worked there; that claim is gone, and this is the check that makes the limit explicit rather than
+# implicit in a stack trace.
+if ! command -v apt-get >/dev/null 2>&1; then
+    {
+        echo "REFUSING: this script provisions Debian/Ubuntu hosts and apt-get is not present here."
+        echo
+        echo "Nothing has been created or changed. On another distribution, follow sections 1-6 of"
+        echo "README-deploy.md, which are the manual equivalent of what this script does — the only"
+        echo "parts that differ are the package-manager commands."
+    } >&2
+    exit 1
+fi
+
 echo "==> service user"
 id -u "$SERVICE_USER" >/dev/null 2>&1 \
     || useradd --system --no-create-home --shell /usr/sbin/nologin "$SERVICE_USER"
@@ -43,6 +62,30 @@ mkdir -p "$STATE_DIR"
 chown -R "$SERVICE_USER:$SERVICE_USER" "$APP_HOME" "$STATE_DIR"
 # The Data Protection keys live here. Group/other have no business reading them.
 chmod 700 "$STATE_DIR"
+
+# The environment file this script, the systemd unit and README-deploy all refer to — and which
+# nothing created until now. README section 4 says to change the port here "not in the shipped unit",
+# and the port-collision warning further down this very script says to set ASPNETCORE_URLS here; both
+# were directing operators at a path that did not exist on a fresh install.
+#
+# Root-owned 0600 because this is where SendGrid keys and similar end up. Only the port is written:
+# guessing App__PublicBaseUrl or AllowedHosts from $HOSTNAME_ARG would bake in the placeholder
+# hostname for anyone who ran this script without one, and a wrong AllowedHosts rejects every real
+# request with a 400. The example alongside it documents both, to be filled in deliberately.
+mkdir -p /etc/mt-uptime
+chmod 755 /etc/mt-uptime
+install -m 0644 "$HERE/mt-uptime.env.example" /etc/mt-uptime/mt-uptime.env.example
+if [[ ! -f /etc/mt-uptime/mt-uptime.env ]]; then
+    printf '%s\n' \
+        '# Written by provision.sh. See mt-uptime.env.example beside this file for everything else,' \
+        '# in particular App__PublicBaseUrl and AllowedHosts once you have a real hostname.' \
+        'ASPNETCORE_URLS=http://127.0.0.1:5081' \
+        > /etc/mt-uptime/mt-uptime.env
+    chmod 600 /etc/mt-uptime/mt-uptime.env
+    echo "    wrote /etc/mt-uptime/mt-uptime.env (port only — set the rest deliberately)"
+else
+    echo "    /etc/mt-uptime/mt-uptime.env already exists — left alone"
+fi
 
 echo "==> ASP.NET Core runtime"
 if [[ "${SKIP_RUNTIME:-}" == "1" ]]; then
@@ -136,7 +179,11 @@ fi
 # so read the port back out of it rather than restating it here, and say so if something already holds
 # it. Not fatal: nothing is deployed yet, and the fix is one line in /etc/mt-uptime/mt-uptime.env.
 APP_PORT="$(grep -oP 'proxy_pass\s+https?://127\.0\.0\.1:\K[0-9]+' "$SITE" | head -1 || true)"
-if [[ -n "$APP_PORT" ]] && ss -ltn 2>/dev/null | grep -q ":$APP_PORT\b"; then
+# "…unless the listener is us." Re-running this script on a host where MT-Uptime is already deployed
+# and running otherwise warns that its own service is squatting the port, which is both false and
+# exactly the kind of thing that teaches an operator to disregard the script's warnings.
+if [[ -n "$APP_PORT" ]] && ss -ltn 2>/dev/null | grep -q ":$APP_PORT\b" \
+   && ! systemctl is-active --quiet mt-uptime; then
     echo "    WARNING: something is already listening on port $APP_PORT." >&2
     echo "    MT-Uptime will fail to bind. Set ASPNETCORE_URLS in /etc/mt-uptime/mt-uptime.env to a" >&2
     echo "    free port and change proxy_pass in $SITE to match." >&2
@@ -153,7 +200,18 @@ Provisioned. Next:
        sudo apt-get install -y certbot python3-certbot-nginx
        sudo certbot --nginx -d $HOSTNAME_ARG
 
-  3. Open https://$HOSTNAME_ARG/ and complete the setup wizard.
+  3. Open https://$HOSTNAME_ARG/ and complete the setup wizard. It asks for a one-time token,
+     generated when the app first starts with no accounts. Read it straight off disk:
+
+       sudo cat $STATE_DIR/setup-token
+
+     It is also printed to the log at startup. Note journald renders the whole message on one
+     line, so pull the token out rather than reaching for grep -A:
+
+       sudo journalctl -u mt-uptime | grep -oP 'one-time token:\s+\K[0-9a-f]+' | tail -1
+
+     It stops whoever reaches the page first from claiming the instance, and is destroyed once
+     your account exists.
 
 Back up $STATE_DIR in full. It holds the database AND the Data Protection keys — without the keys,
 every stored secret is permanently unreadable even with a perfect copy of the database.

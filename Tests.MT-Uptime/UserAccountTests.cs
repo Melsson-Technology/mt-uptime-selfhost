@@ -356,4 +356,84 @@ public class UserAccountTests
         // A link requested before the admin intervened must not survive it.
         Assert.False(await svc.IsResetTokenValidAsync(token!));
     }
+
+    // --- The last-administrator invariant under concurrency ---------------------------------------
+
+    /// <summary>
+    /// Two Admins demoting each other at the same moment must not both succeed. The guard used to be a
+    /// read followed by a write on separate statements, so both callers observed "another Admin exists",
+    /// both wrote, and the instance was left with no administrator at all — unrepairable through the UI,
+    /// since managing accounts requires an Admin and first-run setup declines to help while accounts
+    /// exist. Reproduced in 147 of 200 unassisted runs before the fix.
+    /// </summary>
+    [Fact]
+    public async Task Two_admins_demoting_each_other_cannot_both_win()
+    {
+        for (var round = 0; round < 25; round++)
+        {
+            await using var db = await TestDatabase.CreateAsync();
+            var svc = NewService(db);
+            var a = await svc.CreateAsync($"a{round}", "pw-a", null, UserRole.Admin);
+            var b = await svc.CreateAsync($"b{round}", "pw-b", null, UserRole.Admin);
+
+            // RunContinuationsAsynchronously matters: without it SetResult runs both continuations
+            // inline on this thread, serialising the very interleaving the round exists to produce.
+            var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var first = Task.Run(async () => { await start.Task; return await svc.ChangeRoleAsync(b.Id, UserRole.Viewer); });
+            var second = Task.Run(async () => { await start.Task; return await svc.ChangeRoleAsync(a.Id, UserRole.Viewer); });
+            start.SetResult();
+            var results = await Task.WhenAll(first, second);
+
+            var admins = (await svc.ListAsync()).Count(u => u.Role == UserRole.Admin);
+            Assert.True(admins >= 1, $"round {round}: the instance was left with no administrator");
+
+            // And the refusal has to be reported, not swallowed: an operator told "done" twice would
+            // never learn that one of the two demotions did not happen.
+            if (admins == 1)
+                Assert.Contains(results, r => r is not null);
+        }
+    }
+
+    [Fact]
+    public async Task Two_admins_deleting_each_other_cannot_both_win()
+    {
+        for (var round = 0; round < 25; round++)
+        {
+            await using var db = await TestDatabase.CreateAsync();
+            var svc = NewService(db);
+            var a = await svc.CreateAsync($"a{round}", "pw-a", null, UserRole.Admin);
+            var b = await svc.CreateAsync($"b{round}", "pw-b", null, UserRole.Admin);
+
+            var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            // Each deletes the other, so neither is refused for deleting itself.
+            var first = Task.Run(async () => { await start.Task; return await svc.DeleteUserAsync(b.Id, a.Id); });
+            var second = Task.Run(async () => { await start.Task; return await svc.DeleteUserAsync(a.Id, b.Id); });
+            start.SetResult();
+            await Task.WhenAll(first, second);
+
+            var admins = (await svc.ListAsync()).Count(u => u.Role == UserRole.Admin);
+            Assert.True(admins >= 1, $"round {round}: both deletions landed and no administrator remains");
+        }
+    }
+
+    /// <summary>
+    /// The control. Moving the invariant into the statement must not start refusing ordinary edits —
+    /// including the sole Admin re-selecting the role they already hold, whose own row fails the guard
+    /// by construction and is why the no-op is settled before the write.
+    /// </summary>
+    [Fact]
+    public async Task Ordinary_role_changes_still_work()
+    {
+        var (db, svc, admin) = await SetupAsync();
+        await using var _ = db;
+        var helper = await svc.CreateAsync("helper", "pw", null, UserRole.Viewer);
+
+        Assert.Null(await svc.ChangeRoleAsync(helper.Id, UserRole.Editor));
+        Assert.Null(await svc.ChangeRoleAsync(admin.Id, UserRole.Admin));   // no-op on the sole Admin
+        Assert.NotNull(await svc.ChangeRoleAsync(admin.Id, UserRole.Viewer));   // still refused
+
+        var roles = (await svc.ListAsync()).ToDictionary(u => u.Username, u => u.Role);
+        Assert.Equal(UserRole.Editor, roles["helper"]);
+        Assert.Equal(UserRole.Admin, roles["admin"]);
+    }
 }

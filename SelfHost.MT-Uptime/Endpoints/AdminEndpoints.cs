@@ -35,7 +35,15 @@ public static class AdminEndpoints
             }
 
             var stamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss");
-            var tmp = Path.Combine(Path.GetTempPath(), $"mt-uptime-backup-{stamp}-{Guid.NewGuid():N}.db");
+
+            // Staged beside the database, NOT in Path.GetTempPath(). The state directory is 0700; the
+            // shared /tmp is not, and SQLite creates the copy 0644 — so on a host with any other local
+            // account this handed out a complete database (every password hash, every push token in the
+            // clear, the whole monitored-infrastructure inventory) for the length of the download, and
+            // permanently if the process was killed mid-stream. .NET emulates DeleteOnClose with an
+            // unlink at close rather than at open, so the file is genuinely visible for that whole window.
+            var stagingDirectory = Path.GetDirectoryName(databasePath)!;
+            var tmp = Path.Combine(stagingDirectory, $"mt-uptime-backup-{stamp}-{Guid.NewGuid():N}.db");
 
             // Pooling=false so disposing these connections actually releases the OS file handles —
             // a pooled connection would keep the temp file locked when we stream it below.
@@ -47,6 +55,14 @@ public static class AdminEndpoints
                 await src.OpenAsync(ct);
                 await dst.OpenAsync(ct);
                 src.BackupDatabase(dst);
+            }
+
+            // Belt and braces on top of the 0700 directory: make the copy itself owner-only, so an
+            // install that put its state somewhere more permissive is still covered.
+            if (!OperatingSystem.IsWindows())
+            {
+                try { File.SetUnixFileMode(tmp, UnixFileMode.UserRead | UnixFileMode.UserWrite); }
+                catch (IOException) { /* best effort; the directory mode is the real guarantee */ }
             }
 
             // DeleteOnClose removes the temp file once the response has finished streaming.
@@ -80,15 +96,46 @@ public static class AdminEndpoints
         }).RequireAuthorization(AuthPolicies.Admin);
     }
 
-    /// <summary>Parse a monitor's ConfigJson and null out any secret field before it leaves the box.</summary>
+    /// <summary>
+    /// Every field across the monitor config types that carries a credential. Named rather than
+    /// pattern-matched, so adding a secret field to a config is a deliberate edit here too — the
+    /// alternative, guessing from the field name, fails silently in the direction that leaks.
+    /// </summary>
+    private static readonly string[] SecretConfigFields =
+    [
+        "Password",      // DbMonitorConfig — MySQL/Postgres
+        "AuthSecret",    // HttpMonitorConfig — Basic password or Bearer token
+        "Headers",       // HttpMonitorConfig — where API keys actually end up
+        "Token",         // PushMonitorConfig — the ping credential, and the only one stored in the clear
+    ];
+
+    /// <summary>
+    /// Parses a monitor's ConfigJson and nulls out every secret field before it leaves the box.
+    /// <para>
+    /// This file is meant to be handed around — copied to a laptop, attached to a ticket, kept as a
+    /// record of what was configured — which is exactly why it must not carry credentials. Only
+    /// <c>Password</c> was redacted before, so an export also shipped the encrypted HTTP auth secret and
+    /// header block, and the push monitor's ping token <b>in the clear</b>: that token is a bearer
+    /// credential anyone can use to forge heartbeats and suppress a monitor's outage alerts.
+    /// </para>
+    /// <para>
+    /// The database backup from the sibling endpoint necessarily still contains all of these — it is a
+    /// byte copy — so a backup has to be treated as the credentials it carries. This endpoint is the one
+    /// whose whole purpose is to leave the instance.
+    /// </para>
+    /// </summary>
     private static JsonNode? Redact(string configJson)
     {
         JsonNode? node;
         try { node = JsonNode.Parse(configJson); }
         catch { return null; }
 
-        if (node is JsonObject obj && obj.ContainsKey("Password"))
-            obj["Password"] = null;
+        if (node is not JsonObject obj) return node;
+
+        foreach (var field in SecretConfigFields)
+            if (obj.ContainsKey(field))
+                obj[field] = null;
+
         return node;
     }
 }

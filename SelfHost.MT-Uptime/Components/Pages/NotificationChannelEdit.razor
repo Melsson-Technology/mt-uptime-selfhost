@@ -69,9 +69,12 @@
     <label class="check"><InputCheckbox @bind-Value="_model.IsDefault" /> Apply to all monitors (default channel)</label>
     <label class="check"><InputCheckbox @bind-Value="_model.Enabled" /> Enabled</label>
 
+    @* Amber, not green, when the send worked but nothing is stored yet. A green box next to a Save
+       button is read as "done", which is how a successfully-tested channel gets navigated away from
+       and lost. The wording says so too; the colour is what gets looked at. *@
     @if (_message is not null)
     {
-        <div class="alert @(_ok ? "success" : "error")">@_message</div>
+        <div class="alert @(_ok ? (_unsaved ? "warn" : "success") : "error")">@_message</div>
     }
 
     <div class="actions">
@@ -96,6 +99,9 @@
     private bool _ok;
     private bool _busy;
     private string? _message;
+
+    /// <summary>True when <see cref="_message"/> describes a test against a channel that is not stored.</summary>
+    private bool _unsaved;
 
     protected override async Task OnInitializedAsync()
     {
@@ -179,6 +185,7 @@
     private async Task SaveAsync()
     {
         _message = null;
+        _unsaved = false;
         if (string.IsNullOrWhiteSpace(_model.Name)) { _ok = false; _message = "Name is required."; return; }
         await Channels.SaveAsync(Id, _model.Name.Trim(), _model.Type, BuildConfigJson(), _model.Enabled, _model.IsDefault);
         Nav.NavigateTo("/channels");
@@ -187,6 +194,7 @@
     private async Task TestAsync()
     {
         _message = null;
+        _unsaved = Id is null;
         _busy = true;
         try
         {
@@ -197,7 +205,19 @@
                 DateTime.UtcNow, "MT-Uptime channel test.", null, NotifyKind.Up);
             var ok = await impl.SendAsync(evt, BuildConfigJson(), CancellationToken.None);
             _ok = ok;
-            _message = ok ? "Test sent." : "Send failed — check the URL/token and the logs.";
+
+            // Testing sends from this form and never touches the database, deliberately: you want to
+            // prove a webhook before committing it. But a bare "Test sent." is read as "saved and
+            // working" — it is the strongest possible confirmation the thing is configured — so someone
+            // who tests a new channel successfully and then navigates away loses it and has no reason to
+            // suspect they did anything wrong. Found by a human walking this exact path, which no test
+            // of the send itself could have surfaced.
+            var savedNote = Id is null
+                ? " Not saved yet — press Save to keep this channel."
+                : " Sent using the values on this form, including any edits you have not saved.";
+            _message = ok
+                ? "Test sent." + savedNote
+                : "Send failed — check the URL/token and the logs." + savedNote;
         }
         catch (Exception ex) { _ok = false; _message = "Error: " + ex.Message; }
         finally { _busy = false; }

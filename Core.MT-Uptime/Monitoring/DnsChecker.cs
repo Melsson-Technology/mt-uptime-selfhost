@@ -44,13 +44,40 @@ public sealed class DnsChecker(ILookupClient defaultClient) : IMonitorChecker
             if (!string.IsNullOrWhiteSpace(cfg.ExpectedValue) &&
                 !values.Any(v => v.Contains(cfg.ExpectedValue, StringComparison.OrdinalIgnoreCase)))
                 return CheckResult.Down(
-                    $"Expected \"{cfg.ExpectedValue}\" not in: {string.Join(", ", values)}",
+                    $"Expected \"{cfg.ExpectedValue}\" not in: {Summarise(values)}",
                     sw.Elapsed.TotalMilliseconds);
 
-            return CheckResult.Up(sw.Elapsed.TotalMilliseconds, string.Join(", ", values.Take(3)));
+            return CheckResult.Up(sw.Elapsed.TotalMilliseconds, Summarise(values));
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex) { sw.Stop(); return CheckResult.Down(ex.Message, sw.Elapsed.TotalMilliseconds); }
+    }
+
+    /// <summary>How many answer records are named in a check message before the rest are counted.</summary>
+    private const int MaxValuesShown = 5;
+
+    /// <summary>
+    /// Renders an answer set for a check message: the first few records, then a count.
+    /// <para>
+    /// The Up path always capped this at three records; the mismatch path did not, and joined the whole
+    /// set. Answer data is supplied by whoever is authoritative for the monitored name, and DnsClient
+    /// falls back to TCP when a response is truncated, so a reply can carry roughly 64 KB — around 250
+    /// TXT strings. That is the wrong asymmetry: the uncapped branch was the one that fires when
+    /// something is <em>wrong</em>, and the resulting message goes into every heartbeat row and the
+    /// outbound alert body, where its size can push the payload past what Telegram or Discord accept.
+    /// A zone owner could therefore suppress the alert about their own record changing.
+    /// </para>
+    /// <para>
+    /// <see cref="CheckResult"/> truncates as a backstop; capping here keeps the message legible rather
+    /// than merely bounded — five records and a count says more than 1 KB of run-on text.
+    /// </para>
+    /// </summary>
+    private static string Summarise(IReadOnlyList<string> values)
+    {
+        var shown = string.Join(", ", values.Take(MaxValuesShown));
+        return values.Count > MaxValuesShown
+            ? $"{shown} (+{values.Count - MaxValuesShown} more)"
+            : shown;
     }
 
     private static IEnumerable<string> Extract(IDnsQueryResponse resp, QueryType type) => type switch

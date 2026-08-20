@@ -36,8 +36,16 @@ services:
     ports:
       # host:container. 5081 on the host matches the non-Docker default, which is deliberately not
       # 5000 — that is the ASP.NET Core default and is usually taken already on a shared host.
-      # Change the left number only; the right one is fixed by ASPNETCORE_URLS in the image.
-      - "5081:8080"
+      # Change the port numbers only; the container side is fixed by ASPNETCORE_URLS in the image.
+      #
+      # Bound to 127.0.0.1 deliberately. Kestrel serves plain HTTP and has no TLS, so publishing this
+      # on every interface would put an unencrypted login form on the network. Put a reverse proxy in
+      # front (deploy/mt-uptime.nginx.conf.sample is a worked example) and leave this on loopback.
+      #
+      # To expose it directly anyway — a trusted LAN, a VPN — change this to "5081:8080" and read the
+      # "Exposing it beyond loopback" section in README.md first: it is not just the missing TLS, the
+      # rate limiters need a declared proxy to partition on the real client address.
+      - "127.0.0.1:5081:8080"
 
     volumes:
       # The whole state directory. See the header above before changing this line.

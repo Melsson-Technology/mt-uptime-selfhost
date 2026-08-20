@@ -31,12 +31,12 @@ else
             @foreach (var w in _windows)
             {
                 <tr @key="w.Id">
-                    <td><span class="dot @(IsOpen(w) ? "degraded" : w.Enabled ? "up" : "off")"></span></td>
+                    <td class="cell-lead"><span class="dot @(IsOpen(w) ? "degraded" : w.Enabled ? "up" : "off")"></span></td>
                     <td class="name">@w.Name</td>
-                    <td>@Schedule(w)</td>
-                    <td>@Scope(w)</td>
-                    <td>@(!w.Enabled ? "Disabled" : IsOpen(w) ? "Open now" : "Scheduled")</td>
-                    <td><a href="@($"/maintenance/{w.Id}/edit")">Edit</a></td>
+                    <td data-label="When">@Schedule(w)</td>
+                    <td data-label="Covers">@Scope(w)</td>
+                    <td data-label="Status">@(!w.Enabled ? "Disabled" : IsOpen(w) ? "Open now" : "Scheduled")</td>
+                    <td class="cell-actions"><a href="@($"/maintenance/{w.Id}/edit")">Edit</a></td>
                 </tr>
             }
         </tbody>

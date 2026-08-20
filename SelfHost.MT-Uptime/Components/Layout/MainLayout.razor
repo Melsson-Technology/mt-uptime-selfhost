@@ -5,9 +5,20 @@
         <a href="/" class="brand"><img src="@Assets["img/logo_red_gear.png"]" alt="" class="brand-logo" />MT&#8209;Uptime</a>
         <AuthorizeView>
             <Authorized>
+                @* Shown only below the topbar's collapse breakpoint — app.css hides it above that, so
+                   this markup does not have to know where the breakpoint is. It has no @@onclick because
+                   this layout is statically rendered: js/nav.js drives it. *@
+                <button type="button" class="nav-toggle" data-nav-toggle
+                        aria-controls="main-nav" aria-expanded="false" aria-label="Menu">
+                    <svg viewBox="0 0 20 14" width="20" height="14" aria-hidden="true" focusable="false">
+                        <rect y="0" width="20" height="2" rx="1" />
+                        <rect y="6" width="20" height="2" rx="1" />
+                        <rect y="12" width="20" height="2" rx="1" />
+                    </svg>
+                </button>
                 @* Presentation only. Hiding a link a role cannot use keeps the nav honest, but the page's
                    own [Authorize(Policy = …)] is what actually enforces it — anyone can type a URL. *@
-                <nav class="nav">
+                <nav class="nav" id="main-nav">
                     <a href="/">Dashboard</a>
                     @* Readable by any signed-in account — acknowledging is what needs Editor, and the
                        page gates those buttons itself. *@

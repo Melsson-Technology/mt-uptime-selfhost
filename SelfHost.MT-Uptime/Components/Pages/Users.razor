@@ -36,9 +36,9 @@
         {
             <tr>
                 <td class="name">@u.Username @(u.Id == _currentUserId ? "(you)" : "")</td>
-                <td>@u.DisplayName</td>
-                <td>@u.Email</td>
-                <td>
+                <td data-label="Name">@u.DisplayName</td>
+                <td data-label="Email">@u.Email</td>
+                <td data-label="Role">
                     <select value="@u.Role" @onchange="e => ChangeRoleAsync(u.Id, e.Value?.ToString())">
                         @foreach (var r in Enum.GetValues<UserRole>())
                         {
@@ -46,8 +46,8 @@
                         }
                     </select>
                 </td>
-                <td>@(u.LastLoginAt?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? "never")</td>
-                <td>
+                <td data-label="Last login">@(u.LastLoginAt?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? "never")</td>
+                <td class="cell-actions">
                     <button type="button" class="btn-link" @onclick="() => StartResetPassword(u)">Set password</button>
                     @* No delete control for your own row: the service refuses it anyway, and offering a
                        button that always errors is worse than not offering one. *@

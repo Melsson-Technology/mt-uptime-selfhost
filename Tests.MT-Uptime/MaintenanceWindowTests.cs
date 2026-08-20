@@ -176,7 +176,8 @@ public class MaintenanceWindowTests
         var incidents = new IncidentService(
             tdb,
             new CorrelationKeyResolver(NullLogger<CorrelationKeyResolver>.Instance),
-            Options.Create(new EngineOptions()));
+            Options.Create(new EngineOptions()),
+            NullLogger<IncidentService>.Instance);
         var suppression = new AlertSuppressionService(incidents, maintenance);
 
         var down = new NotificationEvent(id, "site", MonitorStatus.Down, MonitorStatus.Up, at, "boom", null, NotifyKind.Down);

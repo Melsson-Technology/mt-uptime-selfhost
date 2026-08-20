@@ -134,9 +134,16 @@ else
             : null;
     }
 
+    /// <summary>
+    /// The caller's role, passed to every mutating call so the service can refuse on its own account
+    /// rather than relying on a control never having been rendered. Viewer if anything is missing.
+    /// </summary>
+    private async Task<UserRole> ActingRoleAsync()
+        => AuthState is null ? UserRole.Viewer : (await AuthState).User.RoleOrViewer();
+
     private async Task TogglePublishedAsync(ChangeEventArgs e)
     {
-        await IncidentService.SetPublishedAsync(Id, (bool)(e.Value ?? false));
+        await IncidentService.SetPublishedAsync(Id, await ActingRoleAsync(), (bool)(e.Value ?? false));
         await ReloadAsync();
     }
 
@@ -149,7 +156,8 @@ else
             return;
         }
 
-        if (!await IncidentService.AddUpdateAsync(Id, _draft.Kind, _draft.Body, await CurrentUserIdAsync(), DateTime.UtcNow))
+        if (!await IncidentService.AddUpdateAsync(
+                Id, await ActingRoleAsync(), _draft.Kind, _draft.Body, await CurrentUserIdAsync(), DateTime.UtcNow))
         {
             _error = "That incident no longer exists.";
             return;

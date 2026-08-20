@@ -30,4 +30,18 @@
     <IsPackable>false</IsPackable>
   </PropertyGroup>
 
+  <!--
+    Pin the full dependency graph to packages.lock.json, committed alongside each project.
+    Without it, "the same commit" does not mean "the same bytes": floating resolution means a CI build,
+    a contributor's build and the release build can each pull a different transitive version, so neither
+    a security advisory nor a reproduction can be tied to a commit with any confidence. It also makes a
+    dependency change show up as a reviewable diff instead of happening silently at restore time.
+
+    Pass the "locked mode" restore flag in CI to make an out-of-date lock file a build failure rather
+    than a silent update.
+  -->
+  <PropertyGroup>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+  </PropertyGroup>
+
 </Project>

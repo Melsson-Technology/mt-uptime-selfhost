@@ -21,6 +21,13 @@ Environment=DOTNET_gcServer=0
 # Persist the SQLite database and Data Protection keys outside the deploy dir so
 # a redeploy of /opt/mt-uptime never touches them.
 StateDirectory=mt-uptime
+# 0700 on the directory and 0077 for anything created inside it. Without these systemd creates the state
+# directory 0755, and Data Protection writes its key XML 0644 — so on a host with any other local account
+# the key ring is world-readable, which both decrypts every stored secret and allows an auth cookie to be
+# forged. provision.sh chmods the directory, but an install that followed README-deploy.md by hand does
+# not, so the guarantee belongs in the unit rather than in one of the two install paths.
+StateDirectoryMode=0700
+UMask=0077
 Environment=Storage__DatabasePath=/var/lib/mt-uptime/mt-uptime.db
 Environment=Storage__DataProtectionKeysPath=/var/lib/mt-uptime/keys
 
@@ -38,6 +45,10 @@ RestartSec=5
 NoNewPrivileges=true
 ProtectSystem=full
 ProtectHome=true
+# A private /tmp. /admin/backup stages the SQLite online-backup through the temp directory, and on a
+# shared host that file — a full copy of the database — would otherwise be readable by any local account
+# for the duration of the download, defeating the 0700 above.
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
