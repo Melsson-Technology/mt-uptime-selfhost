@@ -66,6 +66,16 @@ POSTGRES_PORT=5432
 
 DNS_RESOLVER=127.0.0.2
 DNS_ZONE=e2e.test
+
+# A real shell constant, not just a line in the manifest heredoc. The self-check's dig_nxdomain reads
+# $DNS_NXDOMAIN_NAME, and under `set -u` an unbound name is a hard error — which is how this shipped:
+# the manifest wrote `DNS_NXDOMAIN_NAME=missing.$DNS_ZONE` as FILE CONTENT, so the name existed in
+# targets.env and never in this script's own environment.
+#
+# The other DNS names are safe because both the manifest and the checks spell them as the same
+# expression (`a.$DNS_ZONE`). This one broke precisely because the two sides disagreed about form.
+DNS_NXDOMAIN_NAME="missing.$DNS_ZONE"
+
 E2E_KEYWORD=MT-UPTIME-E2E-OK
 
 ETC=/etc/mt-uptime-e2e
@@ -666,7 +676,7 @@ DNS_MX_VALUE=mail.$DNS_ZONE.
 DNS_MX_PREFERENCE=10
 DNS_TXT_NAME=txt.$DNS_ZONE
 DNS_TXT_VALUE=mt-uptime-e2e
-DNS_NXDOMAIN_NAME=missing.$DNS_ZONE
+DNS_NXDOMAIN_NAME=$DNS_NXDOMAIN_NAME
 
 MYSQL_HOST=$E2E_HOST
 MYSQL_PORT=$MYSQL_PORT
