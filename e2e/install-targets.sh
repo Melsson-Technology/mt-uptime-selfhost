@@ -367,10 +367,30 @@ step_blackhole() {
     echo "==> TCP blackhole"
     local changed=0
     install_file "$TARGETS/systemd/$BLACKHOLE_UNIT.service" "/etc/systemd/system/$BLACKHOLE_UNIT.service" 0644 && changed=1
-    write_file "$ETC/blackhole.env" 0644 <<EOF && changed=1
-# Written by install-targets.sh. Read by $BLACKHOLE_UNIT.service.
-E2E_TCP_BLACKHOLE_PORT=$TCP_BLACKHOLE_PORT
+
+    # The ruleset lives in a file rather than in the unit's ExecStart= lines, because systemd reads a
+    # bare `;` as a command separator and would cut an inline chain definition in half at nft's own
+    # statement separator. See the long comment in the unit for the error that produced.
+    #
+    # priority -10 puts this chain ahead of the filter hooks ufw and docker install at priority 0, so
+    # the drop applies whatever else is on the box. It is scoped to one destination port on one
+    # machine, so running ahead of the host's firewall costs nothing.
+    write_file "$ETC/blackhole.nft" 0644 <<EOF && changed=1
+# Written by install-targets.sh. Loaded by $BLACKHOLE_UNIT.service with 'nft -f'.
+#
+# A table of our own, so that stopping the unit can 'nft delete table' exactly this and nothing else.
+# The stock /etc/nftables.conf opens with 'flush ruleset', which would take ufw and docker with it.
+table inet mt_uptime_e2e {
+    chain input {
+        type filter hook input priority -10; policy accept;
+        tcp dport $TCP_BLACKHOLE_PORT drop
+    }
+}
 EOF
+
+    # A stale env file from the version of this unit that read one. Harmless, but it would send the
+    # next person looking for a consumer that no longer exists.
+    rm -f "$ETC/blackhole.env"
 
     systemctl daemon-reload
     systemctl enable "$BLACKHOLE_UNIT" >/dev/null 2>&1 || true
