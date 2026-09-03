@@ -242,15 +242,40 @@ step_packages() {
         || echo "    /etc/default/dnsmasq already current"
 # Written by MT-Uptime's install-targets.sh.
 #
-# DNSMASQ_EXCEPT="lo" and IGNORE_RESOLVCONF=yes together stop the Debian package's resolvconf hook
-# from pointing /etc/resolv.conf at our dnsmasq instance.
+# IGNORE_RESOLVCONF=yes stops the Debian package's resolvconf hook from pointing /etc/resolv.conf at
+# our dnsmasq instance.
 #
 # That matters more than it looks. Our dnsmasq is configured `no-resolv` with no upstream servers,
 # because it exists to be authoritative for one zone and to REFUSE everything else. Make it the
 # system resolver and the box can no longer resolve anything at all — no apt, no NuGet, no
 # dotnet-install.sh. The self-check asserts that archive.ubuntu.com still resolves, for exactly this
 # reason.
-DNSMASQ_EXCEPT="lo"
+#
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+#  DNSMASQ_EXCEPT="lo" WAS HERE, AND IT WAS ACTIVELY HARMFUL. DO NOT PUT IT BACK.
+#
+#  Ubuntu's /usr/share/dnsmasq/systemd-helper turns every word of DNSMASQ_EXCEPT into an
+#  `--except-interface=` flag. Excepting `lo` excludes the only interface our listen-address lives on,
+#  so `bind-interfaces` had nothing left to bind and dnsmasq fell back to the WILDCARD — 0.0.0.0:53,
+#  on every interface of the box.
+#
+#  It looked like it worked. A wildcard listener answers on 127.0.0.2 perfectly well, so every DNS
+#  row in the self-check passed and the checker tier's DNS tests passed. What it actually meant:
+#
+#    * dnsmasq was listening on the PUBLIC interface, not loopback. Harmless in the end only because
+#      `no-resolv` with no upstream leaves nothing to recurse with, and because the security group
+#      admits one address — but it was never what the configuration said, and it is not what anyone
+#      reading `listen-address=127.0.0.2 / bind-interfaces` would believe.
+#
+#    * It only worked by winning a race at boot. systemd-resolved holds 127.0.0.53:53 and
+#      127.0.0.54:53; a wildcard bind cannot coexist with those. The first `break dns` stopped
+#      dnsmasq, systemd-resolved was by then already holding both, and the restore died with
+#      "failed to create listening socket for port 53: Address already in use" — taking eight
+#      unrelated DNS tests down with it.
+#
+#  IGNORE_RESOLVCONF alone does the job this was added for. The self-check now asserts the binding
+#  directly rather than inferring it from queries that a wildcard would answer too.
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
 IGNORE_RESOLVCONF=yes
 EOF
 
@@ -894,6 +919,33 @@ system_resolver_intact() {
         || { echo "archive.ubuntu.com does not resolve — dnsmasq has taken over the system resolver"; return 1; }
 }
 
+dns_bound_to_its_own_address_only() {
+    # Asserts the BINDING, not the answers — and that distinction is the whole point of this row.
+    #
+    # Every other DNS check queries 127.0.0.2 and is satisfied by the reply. A wildcard listener
+    # replies to those queries just as happily as a correctly-bound one, so all of them passed for two
+    # hours against a dnsmasq that was actually listening on 0.0.0.0:53, across every interface of the
+    # box. Nothing in the table could tell the difference, because none of it was looking at the
+    # socket.
+    #
+    # It surfaced only when `break dns` stopped the daemon and the restore could not get the wildcard
+    # back — systemd-resolved holds 127.0.0.53:53 and 127.0.0.54:53, and a wildcard bind cannot
+    # coexist with those. Eight unrelated DNS tests failed against the corpse.
+    local listening
+    listening="$(ss -lnu 'sport = :53' 2>/dev/null || true)"
+
+    [[ "$listening" == *"$DNS_RESOLVER:53"* ]] \
+        || { echo "nothing is listening on $DNS_RESOLVER:53 — dnsmasq is not bound where it should be:
+$listening"; return 1; }
+
+    # The failure this row exists for. 0.0.0.0 means bind-interfaces did not take effect, which on a
+    # box with a public address means dnsmasq is reachable from off the machine.
+    [[ "$listening" != *"0.0.0.0:53"* ]] \
+        || { echo "dnsmasq is bound to the WILDCARD, not just $DNS_RESOLVER — bind-interfaces is not
+in effect, and it is listening on every interface including the public one:
+$listening"; return 1; }
+}
+
 mysql_probe() {  # <extra mysql args...>
     local cnf; cnf="$(mktemp)"; chmod 600 "$cnf"
     printf '[client]\nuser=%s\npassword=%s\nhost=%s\nport=%s\n' \
@@ -1032,6 +1084,7 @@ self_check() {
     check "DNS TXT record"                         dig_contains "txt.$DNS_ZONE" TXT mt-uptime-e2e
     check "DNS NXDOMAIN for a missing name"        dig_nxdomain
     check "the system resolver still works"        system_resolver_intact
+    check "dnsmasq is bound to $DNS_RESOLVER only"  dns_bound_to_its_own_address_only
 
     check "MySQL without TLS"                      mysql_probe --ssl-mode=DISABLED --get-server-public-key
     check "MySQL with VERIFY_CA"                   mysql_probe --ssl-mode=VERIFY_CA --ssl-ca="$CERT_DIR/ca/ca.crt"

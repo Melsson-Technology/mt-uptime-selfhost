@@ -68,16 +68,27 @@ public class MySqlCheckerE2E : IClassFixture<CheckerHost>
         Assert.Null(result.Message);
     }
 
-    [E2EFact]
-    public async Task VerifyFull_connects_when_the_host_matches_the_certificate()
+    [E2ETheory]
+    [InlineData("localhost")]
+    [InlineData("127.0.0.1")]
+    public async Task VerifyFull_connects_when_the_host_matches_the_certificate(string host)
     {
-        // VerifyFull additionally checks the name. The leaf carries localhost, 127.0.0.1 and ::1 in its
-        // SAN, so both spellings work — and "localhost" is used here rather than the manifest's
-        // 127.0.0.1 because an IP in a SAN is a different X.509 name type from a DNS name, and a
-        // library that handled only one of them would otherwise pass this test by accident.
-        var result = await ProbeAsync(host: "localhost", tls: DbTlsMode.VerifyFull);
+        // VerifyFull additionally checks the name. The leaf's SAN carries
+        // `DNS:localhost, DNS:e2e.test, IP:127.0.0.1, IP:127.0.0.2, IP:::1`, so both spellings are in
+        // it — and both are worth asserting, because an IP in a SAN is a different X.509 name type
+        // from a DNS name and a library that handled only one of them would pass on the other by
+        // accident.
+        //
+        // Written as a theory after the first run on a real box, where the single "localhost" case
+        // failed while VerifyCa against 127.0.0.1 passed. That test moved TWO variables at once — the
+        // TLS mode and the host — so it could not say which one broke. This can.
+        var result = await ProbeAsync(host: host, tls: DbTlsMode.VerifyFull);
 
-        Assert.Equal(CheckStatus.Up, result.Status);
+        // The message is in the assertion deliberately. `Expected: Up / Actual: Down` is what the
+        // first run reported, and it cost a round trip to the box to learn nothing: the driver's own
+        // words are the entire diagnostic for a TLS failure.
+        Assert.True(result.Status == CheckStatus.Up,
+            $"VerifyFull against '{host}' was {result.Status}: {result.Message}");
     }
 
     [E2EFact]
@@ -106,12 +117,29 @@ public class MySqlCheckerE2E : IClassFixture<CheckerHost>
     }
 
     [E2EFact]
-    public async Task An_unknown_database_is_Down()
+    public async Task An_unknown_database_reports_access_denied_rather_than_naming_it_as_missing()
     {
+        // CORRECTED ON THE BOX. The plan predicted "Unknown database". A real MySQL answers
+        //
+        //     Access denied for user 'e2e_probe'@'127.0.0.1' to database 'no_such_database_e2e'
+        //
+        // and that is correct behaviour rather than a quirk: `e2e_probe` is granted only on `e2e.*`,
+        // and MySQL deliberately does not distinguish "that database does not exist" from "you may
+        // not see it" for an unprivileged user. Telling them apart would let any account with a login
+        // enumerate every schema on the server.
+        //
+        // Worth a test of its own because of what an operator sees: typo a database name on a
+        // least-privileged monitor and the alert says your CREDENTIALS are wrong. That sends them to
+        // re-check a password that was never the problem.
         var result = await ProbeAsync(database: "no_such_database_e2e");
 
         Assert.Equal(CheckStatus.Down, result.Status);
-        Assert.Contains("Unknown database", result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.False(result.Hard);
+        Assert.Contains("Access denied", result.Message, StringComparison.OrdinalIgnoreCase);
+
+        // The one thing that distinguishes this from a wrong password: the message names the database
+        // rather than saying "using password: YES". MySQL error 1044, not 1045.
+        Assert.Contains("no_such_database_e2e", result.Message, StringComparison.Ordinal);
     }
 
     [E2EFact]

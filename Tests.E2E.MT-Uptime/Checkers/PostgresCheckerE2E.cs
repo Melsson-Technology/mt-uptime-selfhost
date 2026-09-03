@@ -65,7 +65,11 @@ public class PostgresCheckerE2E : IClassFixture<CheckerHost>
     {
         var result = await ProbeAsync(host: "localhost", tls: DbTlsMode.VerifyFull);
 
-        Assert.Equal(CheckStatus.Up, result.Status);
+        // The message goes in the assertion, for the same reason as MySqlCheckerE2E's: on a TLS
+        // failure "Expected: Up / Actual: Down" throws away the only thing that explains it, and the
+        // first run on a real box cost a round trip to learn exactly that.
+        Assert.True(result.Status == CheckStatus.Up,
+            $"VerifyFull was {result.Status}: {result.Message}");
     }
 
     [E2EFact]
