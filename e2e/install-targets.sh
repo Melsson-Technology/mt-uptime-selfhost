@@ -135,6 +135,13 @@ if command -v cloud-init >/dev/null 2>&1; then
     cloud-init status --wait >/dev/null 2>&1 || true
 fi
 
+# $ETC has to be traversable by mysql and postgres, which read their TLS key from under it as their own
+# users. Asserted HERE, before any step runs, rather than only in write_manifest at the end — that is
+# where it used to be, and "the directory is fixed up after everything that needed it" is not a fix.
+#
+# A box that already has it at 0700 is repaired by re-running this script, with no need to remint.
+install -d -m 0755 "$ETC"
+
 # --- state used across steps ----------------------------------------------------------------------
 
 # Secrets are carried forward from an existing manifest rather than regenerated. A re-run that minted

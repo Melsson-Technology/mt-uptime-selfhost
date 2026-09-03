@@ -264,7 +264,20 @@ chmod 755 "$DIR" "$DIR/web" "$DIR/mysql" "$DIR/postgres" "$CA_DIR" "$CA2_DIR"
 # both are cheap metadata operations on the same filesystem, so the window where neither set is in place
 # is far shorter than the minute of openssl work above.
 OLD="$FINAL_DIR.previous.$$"
-mkdir -p "$(dirname "$FINAL_DIR")"
+
+# `install -d -m 0755`, NOT `mkdir -p`. The umask 077 set at the top of this script is right for the
+# private keys and wrong for this directory, and mkdir would inherit it: the parent would land at 0700
+# root:root, and mysqld and postgres — which read their key as their own users — could not traverse
+# into it to reach a key whose own ownership is perfectly correct.
+#
+# That is exactly what happened on the first real box. PostgreSQL refused to start with
+#     FATAL: could not load server certificate file ".../postgres/server.crt": Permission denied
+# on a file that was postgres:postgres 0644, because the error is about the PATH, not the file. MySQL
+# hit the same wall and, true to form, started with TLS silently off instead of complaining.
+#
+# 0755 here is safe: everything secret inside carries its own mode — the keys are 0600 owned by their
+# service, and the manifest is 0640 root:<test user>. The directory is a path, not a boundary.
+install -d -m 0755 "$(dirname "$FINAL_DIR")"
 if [[ -d "$FINAL_DIR" ]]; then mv "$FINAL_DIR" "$OLD"; fi
 mv "$STAGE" "$FINAL_DIR"
 rm -rf "$OLD"
