@@ -10,6 +10,18 @@
 
 # Always LF — these are executed by Linux shells or read by Linux tooling.
 *.sh            text eol=lf
+*.py            text eol=lf
+*.cnf           text eol=lf
+*.sudoers       text eol=lf
+*.nft           text eol=lf
+*.sql           text eol=lf
+
+# The break/restore helper has no extension, so none of the rules above reach it — exactly the gap
+# the root .gitattributes documents for scripts/hooks/*. Without this it checks out CRLF on Windows,
+# its shebang becomes "#!/usr/bin/env bash\r", and it fails to execute at all. A helper that silently
+# does not run would leave every break/restore test failing for a reason nothing in the output names.
+e2e/targets/mt-uptime-e2e-target text eol=lf
+
 *.service       text eol=lf
 *.timer         text eol=lf
 *.conf          text eol=lf

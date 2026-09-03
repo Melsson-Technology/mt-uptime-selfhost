@@ -1,0 +1,203 @@
+#!/usr/bin/env bash
+#
+# mt-uptime-e2e-target — break and restore one E2E target service.
+#
+#   mt-uptime-e2e-target break   {http|http-slow|tcp|dns|mysql|postgres|all}
+#   mt-uptime-e2e-target restore {http|http-slow|tcp|dns|mysql|postgres|all}
+#   mt-uptime-e2e-target status  [all]
+#
+# Installed by install-targets.sh to /usr/local/bin, mode 0755 root:root, and reachable by the test
+# user through a NOPASSWD sudoers rule that enumerates exactly the verb/target pairs above.
+#
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+#  0755 root:root IS A SECURITY PROPERTY, NOT TIDINESS
+#
+#  There is a NOPASSWD sudo rule pointing at this path. If the test user could write this file, that
+#  rule would be a root shell for the asking — the user would simply replace the script. Root-owned
+#  and not group-writable is what makes the rule narrow rather than total.
+#
+#  For the same reason the two arguments are matched against a closed `case` and never interpolated
+#  into anything. A wildcard sudoers rule plus an argument that reached `systemctl` unchecked would
+#  let the test user stop any unit on the box, including mt-uptime itself.
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+#
+#  IT WAITS FOR THE STATE IT ASKED FOR
+#
+#  Every verb blocks until the change is observable from the outside — the port actually refuses, the
+#  flag file actually produces a 503 — or gives up after WAIT_CAP seconds and exits non-zero.
+#
+#  This exists so the tests never have to poll for the break itself. `systemctl stop mysql` returns
+#  before the port has finished closing, so a test that broke a target and immediately began asserting
+#  Down would be racing the very thing it just asked for, and would occasionally see one last healthy
+#  check. Putting the wait here means every test's timeout budget covers only what it is actually
+#  measuring: the monitor noticing.
+
+set -euo pipefail
+
+MANIFEST="${MTU_E2E_MANIFEST:-/etc/mt-uptime-e2e/targets.env}"
+WAIT_CAP=60
+
+[[ -r "$MANIFEST" ]] || { echo "FAILED: cannot read $MANIFEST — has install-targets.sh run?" >&2; exit 1; }
+# shellcheck source=/dev/null
+. "$MANIFEST"
+
+VERB="${1:-}"
+TARGET="${2:-}"
+
+usage() { sed -n '5,7p' "$0" | sed 's/^# *//' >&2; exit 2; }
+
+# --- observation helpers ------------------------------------------------------------------------
+#
+# Each returns 0 when the target is UP (healthy) and non-zero when it is DOWN. `break` waits for
+# non-zero, `restore` waits for zero, so one predicate per target serves both verbs and the two can
+# never disagree about what "broken" means.
+
+port_open() {
+    # /dev/tcp rather than nc: it is a bash builtin, so there is no package to depend on. The timeout
+    # matters — against the blackholed port an unguarded connect hangs for the OS default.
+    timeout 3 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null
+}
+
+http_healthy() {
+    [[ "$(curl -s -o /dev/null -m 5 -w '%{http_code}' "${HTTP_BASE_URL}/toggle" 2>/dev/null)" == "200" ]]
+}
+
+http_fast() {
+    # "Not slow" rather than "fast": the threshold sits between the fixture's 1500 ms slow sleep and a
+    # normal loopback response, which is under a millisecond. Anything in between means the flag file
+    # and the fixture disagree, and that should fail rather than be rounded to a verdict.
+    local t
+    t="$(curl -s -o /dev/null -m 10 -w '%{time_total}' "${HTTP_BASE_URL}/toggle" 2>/dev/null || echo 99)"
+    awk -v t="$t" 'BEGIN { exit !(t < 0.75) }'
+}
+
+dns_healthy() {
+    # Two conditions, and the second is not redundant.
+    #
+    # `dig +short` prints its own diagnostics to STDOUT, not stderr: with the resolver stopped it
+    # emits ";; communications error to 127.0.0.2#53: connection refused" as ordinary output. A
+    # non-empty-output test therefore reports a completely dead resolver as healthy — measured, not
+    # theorised. `break dns` then waited the full sixty seconds and failed, and `restore dns` would
+    # have "succeeded" without dnsmasq running at all.
+    #
+    # So: require dig's exit status to be 0 AND the answer to be the address the manifest says it
+    # should be. Matching the expected value rather than merely "an address" also catches a resolver
+    # that is up but serving the wrong zone.
+    local out
+    out="$(dig "@${DNS_RESOLVER}" +short +time=1 +tries=1 "$DNS_A_NAME" A 2>/dev/null)" || return 1
+    [[ "$out" == *"$DNS_A_VALUE"* ]]
+}
+
+healthy() {
+    case "$1" in
+        http)      http_healthy ;;
+        http-slow) http_fast ;;
+        tcp)       port_open "$E2E_HOST" "$TCP_PORT" ;;
+        dns)       dns_healthy ;;
+        mysql)     port_open "$MYSQL_HOST" "$MYSQL_PORT" ;;
+        postgres)  port_open "$POSTGRES_HOST" "$POSTGRES_PORT" ;;
+        *)         return 2 ;;
+    esac
+}
+
+# wait_for <target> <up|down>
+wait_for() {
+    local target="$1" want="$2" i
+    for ((i = 0; i < WAIT_CAP * 2; i++)); do
+        if healthy "$target"; then
+            [[ "$want" == "up" ]] && return 0
+        else
+            [[ "$want" == "down" ]] && return 0
+        fi
+        sleep 0.5
+    done
+    echo "FAILED: $target did not go $want within ${WAIT_CAP}s." >&2
+    echo "The target service is in an unknown state; run '$0 status' before trusting any result." >&2
+    return 1
+}
+
+# --- actions ------------------------------------------------------------------------------------
+
+unit_for() {
+    case "$1" in
+        tcp)      echo "$TCP_UNIT" ;;
+        dns)      echo "$DNS_UNIT" ;;
+        mysql)    echo "$MYSQL_UNIT" ;;
+        postgres) echo "$POSTGRES_UNIT" ;;
+        *)        return 1 ;;
+    esac
+}
+
+do_break() {
+    case "$1" in
+        # A flag file rather than stopping the fixture, because the HTTP tests need the difference
+        # between "the server answered 503" (a hard, definitive Down that bypasses the retry window)
+        # and "nothing is listening" (a soft Down). Stopping the unit could only ever produce the
+        # second, and 503 is the one the state machine treats specially.
+        http)      mkdir -p "$(dirname "$HTTP_TOGGLE_FLAG")"; : > "$HTTP_TOGGLE_FLAG" ;;
+        http-slow) mkdir -p "$(dirname "$HTTP_SLOW_FLAG")";   : > "$HTTP_SLOW_FLAG" ;;
+        *)         systemctl stop "$(unit_for "$1")" ;;
+    esac
+}
+
+do_restore() {
+    case "$1" in
+        http)      rm -f "$HTTP_TOGGLE_FLAG" ;;
+        http-slow) rm -f "$HTTP_SLOW_FLAG" ;;
+        *)         systemctl start "$(unit_for "$1")" ;;
+    esac
+}
+
+# `all` deliberately omits http-slow, and the reason is a genuine interaction rather than an oversight.
+#
+# The fixture checks the down flag BEFORE the slow flag, so once http is broken /toggle answers 503
+# instantly and the slow flag has no observable effect. `break all` therefore used to set the slow flag
+# and then wait sixty seconds for a latency change that could never arrive, before failing — having
+# already broken everything. The two HTTP breaks are mutually exclusive by construction; a caller that
+# wants the slow one asks for it by name.
+TARGETS_ALL=(http tcp dns mysql postgres)
+
+# Every target the verbs accept individually, including the one `all` skips. Kept separate so `status`
+# still reports on http-slow.
+TARGETS_EACH=(http http-slow tcp dns mysql postgres)
+
+# --- main ---------------------------------------------------------------------------------------
+
+case "$VERB" in
+    break|restore)
+        case "$TARGET" in
+            http|http-slow|tcp|dns|mysql|postgres) LIST=("$TARGET") ;;
+            all) LIST=("${TARGETS_ALL[@]}") ;;
+            *) usage ;;
+        esac
+
+        for t in "${LIST[@]}"; do
+            if [[ "$VERB" == "break" ]]; then
+                do_break "$t"
+                wait_for "$t" down
+            else
+                do_restore "$t"
+                wait_for "$t" up
+            fi
+            echo "$VERB $t: ok"
+        done
+        ;;
+
+    status)
+        # Deliberately not in the sudoers rule as a privileged operation for its own sake — it needs no
+        # privilege at all. It is granted only so a test that has just failed can print the state of
+        # every target through the same path it used to change them.
+        case "${TARGET:-all}" in
+            all) LIST=("${TARGETS_EACH[@]}") ;;
+            http|http-slow|tcp|dns|mysql|postgres) LIST=("$TARGET") ;;
+            *) usage ;;
+        esac
+        rc=0
+        for t in "${LIST[@]}"; do
+            if healthy "$t"; then printf '%-10s up\n' "$t"; else printf '%-10s DOWN\n' "$t"; rc=1; fi
+        done
+        exit $rc
+        ;;
+
+    *) usage ;;
+esac

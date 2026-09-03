@@ -1,0 +1,52 @@
+# mysql-e2e.cnf — TLS and loopback settings for the MySQL monitor target.
+#
+# Installed by install-targets.sh to /etc/mysql/mysql.conf.d/zz-mt-uptime-e2e.cnf.
+#
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+#  THE FILENAME IS LOAD-BEARING: zz-
+#
+#  /etc/mysql/my.cnf pulls in mysql.conf.d with !includedir, which reads files in ALPHABETICAL order,
+#  and for a repeated scalar the LAST value read wins. The stock file is mysqld.cnf, so anything named
+#  before it — mt-uptime-e2e.cnf, for instance — is silently overridden by the very settings it means
+#  to change. The symptom is a server that ignores this file completely while the file is plainly
+#  present and plainly correct.
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+#
+#  A NOTE ON WHY TLS MUST STAY ON
+#
+#  MySQL 8 defaults to caching_sha2_password, and that plugin will not send a password over an
+#  unencrypted connection unless the client either has the server's public key or sets
+#  AllowPublicKeyRetrieval. MySqlChecker sets neither (Core.MT-Uptime/Monitoring/MySqlChecker.cs:26-44),
+#  so a MySQL monitor against a non-TLS server fails to authenticate at all. It works today only
+#  because MySQL 8 offers TLS by default and MySqlConnector's default SslMode is Preferred.
+#
+#  That is a real product limitation, not a property of this box, and it is what the "MySQL with TLS
+#  disabled" test is for. Do not paper over it here by switching the user to mysql_native_password:
+#  that plugin is deprecated from 8.0.34 and removed in 8.4, so testing against it would be testing a
+#  configuration no new user can have.
+
+[mysqld]
+# IPv4 loopback only. The security group does not expose 3306, but binding the wildcard would still
+# make the port reachable from anything else that ends up on this host.
+bind-address = 127.0.0.1
+
+# The X protocol listens on 33060 and nothing here speaks it. Off, so it is not one more port to
+# explain in `ss -ltn` output.
+mysqlx = OFF
+
+# Our own CA and leaf. mysqld must be able to READ the key as the mysql user, and on Ubuntu that means
+# two things beyond file modes: the key is chowned mysql:mysql by install-targets.sh, and AppArmor's
+# usr.sbin.mysqld profile is given an explicit read rule for this directory.
+#
+# Get either wrong and mysqld starts happily with TLS SILENTLY OFF — no error, no refusal, just
+# `SHOW STATUS LIKE 'Ssl_cipher'` coming back empty and every MySQL monitor failing authentication in
+# a way that points at the checker. That is why the self-check asserts on Ssl_cipher rather than on
+# "login works".
+ssl-ca   = /etc/mt-uptime-e2e/certs/ca/ca.crt
+ssl-cert = /etc/mt-uptime-e2e/certs/mysql/server.crt
+ssl-key  = /etc/mt-uptime-e2e/certs/mysql/server.key
+
+# Deliberately OFF. The battery needs to be able to connect WITHOUT TLS in order to demonstrate the
+# caching_sha2 limitation above; requiring secure transport would turn that finding into a server-side
+# refusal and hide what the checker actually does.
+require_secure_transport = OFF

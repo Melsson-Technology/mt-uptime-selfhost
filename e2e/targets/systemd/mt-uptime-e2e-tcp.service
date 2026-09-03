@@ -1,0 +1,34 @@
+[Unit]
+# The port TCP monitor tests connect to. `mt-uptime-e2e-target break tcp` stops this unit, which is
+# what turns "accepting" into "connection refused" — the soft-failure path a TCP monitor should see
+# when a service dies but its host is fine.
+Description=MT-Uptime E2E TCP listener
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Unprivileged, unlike the fixture: this one touches no flag files, so there is nothing to justify
+# root. DynamicUser gives it a transient account with no home and no shell, created at start and gone
+# at stop — nothing to provision and nothing left behind on a box that gets rebuilt often.
+DynamicUser=yes
+
+ExecStart=/usr/bin/python3 /opt/mt-uptime-e2e/tcp-listener.py
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/etc/mt-uptime-e2e/tcp.env
+
+# Restart=always would fight the break/restore helper: `systemctl stop` is not a failure, so systemd
+# would not restart it — but a crash during a Down assertion would silently restore the service and
+# turn a real defect into a passing test. on-failure with a delay long enough to be visible is the
+# honest setting; the self-check asserts the port is listening, so a crash is caught there instead.
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

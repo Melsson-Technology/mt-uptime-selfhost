@@ -123,6 +123,58 @@ previous published version.
   paths can be changed without editing the shipped unit. The default is 5081 rather than the ASP.NET Core
   default of 5000, which is frequently already in use on a shared host.
 
+### Testing
+
+- **An end-to-end battery, in `e2e/` and `Tests.E2E.MT-Uptime/`** — in progress, and useful already.
+  The existing suite is hermetic by design, which is a promise worth keeping and also a limit: none of
+  its 360 tests has ever watched a real service go down. `e2e/install-targets.sh` prepares a disposable
+  Ubuntu box with a real target behind every monitor type — an HTTP fixture behind nginx on plain HTTP
+  and on four HTTPS ports carrying valid, near-expiry, expired and untrusted certificates; a TCP
+  listener, a closed port and a blackholed one; an authoritative DNS zone with A/AAAA/CNAME/MX/TXT
+  records; and MySQL and PostgreSQL with TLS from a CA minted at install time. A root-owned helper
+  breaks and restores each target on demand, and blocks until the change is observable from outside, so
+  a test never races the outage it just asked for.
+- The battery is a **separate project, kept out of `MT-Uptime.Engine.slnx`**, so `scripts/test.sh` still
+  runs exactly 360 hermetic tests and the "works on a fresh clone with only the SDK" promise is
+  unchanged. Without a target manifest every end-to-end test reports skipped rather than failed, so it
+  is safe to run anywhere.
+- **`e2e/smoke.sh` proves the documented install actually works**, against the service on its own port
+  and through nginx: health on both origins, the one-shot first-run wizard and its setup token, the
+  anonymous boundaries including the Blazor circuit's, the push endpoint, both rate limiters, the admin
+  backup and JSON export, and the state directory's permissions and key ring. It also completes first-run
+  setup and records the administrator, which is what lets the browser tier sign in.
+- `e2e/run-tests.sh` runs one tier at a time and refuses rather than reporting a hollow pass: a missing
+  or unreadable target manifest, and a tier whose filter matches no test, are both errors — `dotnet test`
+  exits zero when its filter matches nothing.
+- **The checker matrix: 113 tests putting every monitor type against a real service.** Tcp, Dns and Tls
+  had no behavioural tests at all before this, and `HttpCheckerTests` drove a stubbed message handler —
+  which cannot observe the four pooled clients the monitoring engine registers, and those clients are
+  where "follow redirects" and "ignore TLS errors" actually live. Among the things now pinned against
+  real servers: a bad status code confirms Down immediately while a missing keyword does not; ignoring
+  TLS errors does not quietly re-enable redirect-following; a redirect loop reports the final 3xx rather
+  than throwing; every database TLS mode up to `VerifyCa` really does verify against the system trust
+  store; and a DNS resolver that is not a valid IP address silently falls back to the system resolver.
+- **21 pipeline scenarios that run the whole engine against a real outage.** A target is broken, and
+  the assertion is made on what came out the far end: heartbeats, incidents and a webhook delivered to
+  an endpoint the tests host. Among them — a bad HTTP status confirms Down on the first check while a
+  refused socket spends its retry window first, and the beats in between are recorded as Pending and
+  alert exactly once; a blip that recovers inside that window never alerts at all; a sustained slowdown
+  confirms Degraded and a single fast check clears the streak; a push monitor goes down on silence and
+  recovers on a ping; adding a healthy monitor pages nobody; and two monitors failing on one host open
+  **one** correlated incident rather than two alerts.
+- **A browser tier that drives the installed instance through every configuring page.** Every one of
+  them is `@rendermode InteractiveServer`, so until now none had ever been exercised: a monitor of each
+  of the seven types created through the real form, a notification channel proved with its own "Send
+  test" button, roles enforced for an Editor and a Viewer, a status page read by an anonymous visitor,
+  tag filtering, and a maintenance window that suppresses the outage page while still announcing the
+  recovery. The one that matters most is the dashboard flipping to **Down without a reload** — a dead
+  Blazor circuit renders a perfect page that never changes again, and nothing but a browser can tell
+  the difference.
+- No certificates are committed. `scripts/publish-public.sh` refuses to publish a `.crt`, `.key` or
+  `.pem` tracked under `engine/`, so the whole set is minted at runtime — into a staging directory that
+  is swapped in with a rename, because the first version deleted the old certificates before writing
+  the new ones and an interrupted run left the box with none at all.
+
 ### Storage
 
 - SQLite with WAL, tuned pragmas, and incremental auto-vacuum.

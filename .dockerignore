@@ -38,3 +38,10 @@ _docs/
 deploy/
 scripts/
 *.md
+
+# The end-to-end battery. The Dockerfile copies only Core.MT-Uptime/ and SelfHost.MT-Uptime/ by name,
+# so neither of these would reach the image anyway — they are listed for the same reason the entries
+# above are: to keep the build context small and to say out loud that they are not part of the app.
+# e2e/ additionally holds shell and Python that only ever runs on a prepared test box.
+e2e/
+Tests.E2E.MT-Uptime/

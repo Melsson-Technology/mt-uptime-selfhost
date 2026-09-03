@@ -1,0 +1,58 @@
+[Unit]
+# The HTTP backend every HTTP and TLS monitor test probes, directly on :8090 and through nginx on
+# :8081 and :8443-:8446.
+Description=MT-Uptime E2E HTTP fixture backend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Type=simple: the fixture is a stdlib HTTP server with no readiness protocol. install-targets.sh
+# polls /ok after starting it rather than trusting systemd's "active", because "the process is
+# running" and "the socket is accepting" are not the same instant.
+Type=simple
+
+# Root, and that is a deliberate exception to how everything else on this box runs.
+#
+# The fixture reads and is driven by flag files under /run/mt-uptime-e2e/, which the break/restore
+# helper creates as root via sudo. Running the fixture as a dedicated user would mean either making
+# that directory group-writable or giving the helper a chown — both more moving parts than a
+# throwaway target service on a disposable box justifies.
+#
+# This is safe because of what it cannot reach, not because of who it runs as: it binds loopback only,
+# the security group does not expose it, and the hardening block below removes almost everything root
+# would otherwise imply.
+User=root
+Group=root
+
+ExecStart=/usr/bin/python3 /opt/mt-uptime-e2e/fixture-server.py
+
+# Unbuffered, or Python holds the request log in a pipe buffer and the journal shows nothing until the
+# process exits — which is exactly when you no longer need it.
+Environment=PYTHONUNBUFFERED=1
+
+# Everything else — ports, the keyword, credentials, flag paths — comes from the manifest, so this
+# unit carries no host-specific values and needs no edit when the manifest is regenerated.
+EnvironmentFile=/etc/mt-uptime-e2e/fixture.env
+
+Restart=always
+RestartSec=2
+
+# Hardening. Same set as engine/deploy/mt-uptime.service, plus the two below.
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=false
+
+# PrivateTmp is off, above, and that is the one deviation that matters: the flag files live under
+# /run/mt-uptime-e2e/, and a private /tmp does not affect /run — but PrivateTmp=true also gives the
+# unit a private /var/tmp, and turning it on here has no benefit while making the flag mechanism one
+# more thing to reason about. Stated explicitly so nobody "restores" it without reading this.
+
+# Read-only everywhere except the runtime directory it needs, which systemd creates and cleans up.
+RuntimeDirectory=mt-uptime-e2e
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+ReadWritePaths=/run/mt-uptime-e2e
+
+[Install]
+WantedBy=multi-user.target

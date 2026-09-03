@@ -1,0 +1,58 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The end-to-end battery: the checkers, the monitoring pipeline and the UI, against REAL services on
+    a machine prepared by e2e/install-targets.sh.
+
+    It is a separate project, and deliberately NOT a member of MT-Uptime.Engine.slnx, because
+    scripts/test.sh runs that solution and the promise attached to it is specific:
+
+        "The suite is hermetic: throwaway SQLite files in the temp directory, no external services, no
+         environment variables. A fresh clone with only the .NET SDK installed can run this immediately."
+
+    Everything in here breaks that promise on purpose — it wants a MySQL server, an authoritative DNS
+    zone and four TLS ports. Keeping it out of the solution is what lets both statements stay true:
+    ./scripts/test.sh remains 360 hermetic tests, and ./e2e/run-tests.sh runs this.
+
+    Run it with e2e/run-tests.sh, or by path:
+        dotnet test engine/Tests.E2E.MT-Uptime
+
+    On a machine with no target manifest every test reports SKIPPED rather than failed, so it is safe
+    to run anywhere — including on a developer laptop that has never seen an E2E box.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <!-- Folder is Role.MT-Uptime, assembly and namespace are MT.Uptime.*; see CONTRIBUTING.md. -->
+    <AssemblyName>MT.Uptime.Tests.E2E</AssemblyName>
+    <RootNamespace>MT.Uptime.Tests.E2E</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Versions match Tests.MT-Uptime exactly. Two test projects in one repository resolving
+         different xunit or test-SDK versions is a debugging session nobody needs. -->
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.11" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <!-- Tier 3 only. The package carries the driver; the browser binaries are installed per user by
+         "run-tests.sh (tier ui)", because Playwright keeps them under ~/.cache/ms-playwright and a
+         root-installed copy would be in the wrong home directory.
+         (An XML comment cannot contain a double hyphen, hence the paraphrased flag.) -->
+    <PackageReference Include="Microsoft.Playwright" Version="1.62.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Core for the checkers, the configs and the entities; SelfHost for Program (so
+         WebApplicationFactory can boot the real pipeline) and for UserAccountService. DnsClient,
+         MySqlConnector and Npgsql arrive transitively through Core. -->
+    <ProjectReference Include="..\Core.MT-Uptime\Core.MT-Uptime.csproj" />
+    <ProjectReference Include="..\SelfHost.MT-Uptime\SelfHost.MT-Uptime.csproj" />
+  </ItemGroup>
+
+</Project>

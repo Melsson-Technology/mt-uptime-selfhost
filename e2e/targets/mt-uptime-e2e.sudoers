@@ -1,0 +1,75 @@
+# Install to /etc/sudoers.d/mt-uptime-e2e, mode 0440, root:root.
+# Validate before installing — a malformed sudoers file can lock everyone out of sudo:
+#     visudo -c -f mt-uptime-e2e.sudoers
+#
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+#  THE INSTALLED FILENAME MUST NOT CONTAIN A DOT
+#
+#  sudo skips any file in /etc/sudoers.d whose name contains a '.' or ends in '~'. It does so
+#  silently, which is the problem: the file is present, `visudo -c` on it passes, and every rule in it
+#  is simply not in effect. install-targets.sh therefore installs this as `mt-uptime-e2e`, dropping
+#  the .sudoers suffix that exists only to make the file's purpose obvious in the repository.
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+#
+#  WHY THE TEST RUNNER IS NOT ROOT
+#
+#  The pipeline and UI tiers run `dotnet test`, which restores NuGet packages and executes a browser.
+#  That is a great deal of third-party code, and it has no business running as root just so a test can
+#  stop mysqld. Instead the test user reaches exactly one root-owned script, with exactly the
+#  argument pairs enumerated below.
+#
+#  What is deliberately absent:
+#
+#    * No wildcard on the target. `mt-uptime-e2e-target break *` would look equivalent — the script
+#      validates its own arguments with a closed case — but it would mean a future edit to that script
+#      could widen this rule without anybody editing this file. The pairs are spelled out so the
+#      privilege boundary lives here, where it is reviewed, rather than in the script's control flow.
+#
+#    * No `systemctl` of any kind. The test user cannot stop or start a unit directly, only ask the
+#      helper to, and the helper's `case` reaches only the four target units. In particular it cannot
+#      touch mt-uptime itself — a test that could restart the application under test could mask
+#      exactly the defects this battery exists to find.
+#
+#    * No `nft`. The blackhole rule is installed once, by a systemd unit at boot, precisely so that
+#      packet filtering is never something a test can change.
+#
+#  The helper is 0755 root:root. That is load-bearing rather than tidy: a NOPASSWD rule pointing at a
+#  file its grantee can write is a root shell for the asking.
+
+Cmnd_Alias MTU_E2E_BREAK = \
+    /usr/local/bin/mt-uptime-e2e-target break http, \
+    /usr/local/bin/mt-uptime-e2e-target break http-slow, \
+    /usr/local/bin/mt-uptime-e2e-target break tcp, \
+    /usr/local/bin/mt-uptime-e2e-target break dns, \
+    /usr/local/bin/mt-uptime-e2e-target break mysql, \
+    /usr/local/bin/mt-uptime-e2e-target break postgres, \
+    /usr/local/bin/mt-uptime-e2e-target break all
+
+Cmnd_Alias MTU_E2E_RESTORE = \
+    /usr/local/bin/mt-uptime-e2e-target restore http, \
+    /usr/local/bin/mt-uptime-e2e-target restore http-slow, \
+    /usr/local/bin/mt-uptime-e2e-target restore tcp, \
+    /usr/local/bin/mt-uptime-e2e-target restore dns, \
+    /usr/local/bin/mt-uptime-e2e-target restore mysql, \
+    /usr/local/bin/mt-uptime-e2e-target restore postgres, \
+    /usr/local/bin/mt-uptime-e2e-target restore all
+
+# `status` needs no privilege at all — it only opens sockets and runs dig. It is granted anyway, and
+# only because a test that has just failed should be able to print the state of every target through
+# the same path it used to change them: a status read that went by a different route could disagree
+# with the helper's own view, and then the failure report would be arguing with itself.
+Cmnd_Alias MTU_E2E_STATUS = \
+    /usr/local/bin/mt-uptime-e2e-target status, \
+    /usr/local/bin/mt-uptime-e2e-target status http, \
+    /usr/local/bin/mt-uptime-e2e-target status http-slow, \
+    /usr/local/bin/mt-uptime-e2e-target status tcp, \
+    /usr/local/bin/mt-uptime-e2e-target status dns, \
+    /usr/local/bin/mt-uptime-e2e-target status mysql, \
+    /usr/local/bin/mt-uptime-e2e-target status postgres, \
+    /usr/local/bin/mt-uptime-e2e-target status all
+
+__E2E_TEST_USER__ ALL=(root) NOPASSWD: MTU_E2E_BREAK, MTU_E2E_RESTORE, MTU_E2E_STATUS
+
+# The tests invoke this as `sudo -n`, never plain `sudo`. If a rule above is wrong or missing, -n makes
+# sudo fail immediately instead of blocking on a password prompt that no test run can ever answer —
+# the difference between one red test and a suite that hangs until someone notices.

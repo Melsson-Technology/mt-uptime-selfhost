@@ -28,6 +28,12 @@ TestResults/
 *.db-shm
 *.design.db*
 
+# Python bytecode. The E2E target fixtures under e2e/targets/ are Python, and merely importing or
+# byte-compiling one — which `python3 -m py_compile` during development does — drops a __pycache__
+# directory next to it. Harmless, but it is build output and it does not belong in a published tree.
+__pycache__/
+*.py[cod]
+
 # Local tooling config — machine-specific paths, and not useful to anyone else
 .claude/settings.local.json
 

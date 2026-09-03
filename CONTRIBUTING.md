@@ -57,8 +57,10 @@ temp directory and clean up after themselves — so a fresh clone works immediat
 ```
 Core.MT-Uptime/       the engine: checkers, state machine, scheduler, notifications, retention
 SelfHost.MT-Uptime/   the Blazor Server host: pages, endpoints, auth
-Tests.MT-Uptime/      xUnit
+Tests.MT-Uptime/      xUnit — the hermetic suite, run by scripts/test.sh
+Tests.E2E.MT-Uptime/  xUnit — the end-to-end battery, against real services (see e2e/)
 deploy/               systemd unit, nginx sample, deployment guide
+e2e/                  prepares a disposable box with a real service behind every monitor type
 scripts/              build / test / run, as .ps1 + .sh pairs
 ```
 
@@ -89,7 +91,9 @@ Worth understanding before changing anything under `Core.MT-Uptime/Monitoring`:
 3. Add a config record under `Monitoring/Configs/` — per-type settings live in `Monitor.ConfigJson`, so
    **no database migration is needed**.
 4. Add the form fields to `MonitorEdit.razor`.
-5. Add tests. `HttpCheckerTests` shows the pattern for a checker with a stubbed `IHttpClientFactory`.
+5. Add tests. `HttpCheckerTests` shows the pattern for a checker with a stubbed `IHttpClientFactory`,
+   and `Tests.E2E.MT-Uptime` is where the same checker meets a real server — add a case there too, plus
+   whatever the new type needs as a target in `e2e/install-targets.sh`.
 
 ## Things that will get a change sent back
 
@@ -116,6 +120,25 @@ EndpointAuthorizationTests                which endpoints an anonymous caller ma
 
 `EndpointAuthorizationTests` boots the real pipeline through `WebApplicationFactory`, because endpoint
 authorization only exists in the middleware chain — you cannot unit-test it from a handler.
+
+### The end-to-end battery
+
+Those tests are all hermetic, which is a promise worth keeping and also a limit: none of them has ever
+watched a real service go down. `Tests.E2E.MT-Uptime` does, against a machine prepared by
+[`e2e/install-targets.sh`](e2e/README.md) — a real HTTP fixture behind four differently-certificated
+HTTPS ports, a TCP listener, an authoritative DNS zone, and MySQL and PostgreSQL with TLS.
+
+It is a **separate project, deliberately not in `MT-Uptime.Engine.slnx`**, so `./scripts/test.sh` never
+sees it and stays exactly 360 hermetic tests. Run it with `./e2e/run-tests.sh`, or by path:
+
+```
+dotnet test engine/Tests.E2E.MT-Uptime
+```
+
+Without a target manifest every test reports **skipped** rather than failed, so that command is safe on
+a machine that has never seen an E2E box. If you add a monitor type, add a Tier 1 case for it there as
+well as the unit tests above — a checker that has never met a real server is a checker nobody has
+tested.
 
 ## Style
 
