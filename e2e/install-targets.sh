@@ -549,7 +549,11 @@ step_postgres() {
 
     # The database is created here rather than in the SQL file because CREATE DATABASE cannot run
     # inside a transaction block, and psql -f wraps the file in one.
-    if ! runuser -u postgres -- psql -tAc "SELECT 1 FROM pg_database WHERE datname='e2e'" 2>/dev/null | grep -q 1; then
+    # `grep`, not `grep -q`. Under pipefail, -q exits on the first match and closes the pipe, psql can
+    # die of SIGPIPE, and the pipeline then reports 141 — which `!` inverts into "the database does not
+    # exist", sending this straight into a createdb that fails because it does. The output is one line;
+    # reading it to the end costs nothing.
+    if ! runuser -u postgres -- psql -tAc "SELECT 1 FROM pg_database WHERE datname='e2e'" 2>/dev/null | grep 1 >/dev/null; then
         runuser -u postgres -- createdb -O postgres e2e
         echo "    created database 'e2e'"
     fi
@@ -794,7 +798,11 @@ body_contains() {  # <needle> <url> [curl args...]
 
 header_is() {  # <header> <expected> <url>
     local name="$1" want="$2" url="$3" got
-    got="$(curl -sI -m 10 "$url" | tr -d '\r' | awk -F': ' -v h="$name" 'tolower($1)==tolower(h){print $2}' | head -1)"
+    # awk keeps only the first match itself rather than piping into `head -1`. head would close the
+    # pipe after one line while awk was still reading, and under pipefail awk's SIGPIPE becomes the
+    # pipeline's status — failing a check whose header was present and correct.
+    got="$(curl -sI -m 10 "$url" | tr -d '\r' \
+        | awk -F': ' -v h="$name" 'tolower($1)==tolower(h) && !seen {print $2; seen=1}')"
     [[ "$got" == "$want" ]] || { echo "$name was '$got', expected '$want'"; return 1; }
 }
 

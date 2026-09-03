@@ -104,7 +104,7 @@ echo "==> preflight"
 
 command -v curl >/dev/null 2>&1 || { echo "curl is not installed" >&2; exit 1; }
 
-if ! systemctl list-unit-files "$SERVICE.service" --no-legend 2>/dev/null | grep -q .; then
+if ! systemctl list-unit-files "$SERVICE.service" --no-legend 2>/dev/null | grep . >/dev/null; then
     {
         echo "REFUSING: there is no $SERVICE.service on this box, so there is nothing to smoke-test."
         echo
@@ -168,10 +168,20 @@ FIRST_RUN=0
 [[ -n "$SETUP_TOKEN" ]] && FIRST_RUN=1
 
 if [[ $FIRST_RUN -eq 1 ]]; then
-    # 32 alphanumeric characters. Alphanumeric is not laziness: this password is written into a
-    # manifest that other scripts read with `source`, so a '$', a backtick or a space in it would be
-    # executed by the shell rather than read. The entropy is ~190 bits either way.
-    ADMIN_PASSWORD="$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32)"
+    # 32 hex characters, from openssl rather than a pipeline. Alphanumeric is not laziness: this
+    # password is written into a manifest that other scripts read with `source`, so a '$', a backtick
+    # or a space in it would be executed by the shell rather than read.
+    #
+    # This was `tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32`, which is the idiom everyone reaches
+    # for and which CANNOT work under `set -o pipefail`: head closes the pipe after 32 bytes, tr is
+    # still writing from an infinite source, tr dies of SIGPIPE with status 141, pipefail promotes
+    # that to the pipeline's status, and `set -e` exits the script — silently, mid-preflight, with no
+    # message at all. It fired only on the first-run branch, so it was invisible until a box reached
+    # exactly this state.
+    #
+    # openssl rand has no pipeline to break, and it is what install-targets.sh's new_secret() already
+    # uses for the database passwords. 128 bits.
+    ADMIN_PASSWORD="$(openssl rand -hex 16)"
     echo "    first-run setup is OPEN — the wizard will be completed as '$ADMIN_USER'"
 else
     ADMIN_PASSWORD="${MTU_ADMIN_PASSWORD:-}"
@@ -291,7 +301,11 @@ not_status() {
 
 header_present() {  # <header> <url> [curl args...]
     local name="$1" url="$2"; shift 2
-    curl -sI -m 15 "$@" "$url" | tr -d '\r' | grep -qi "^$name:" \
+    # `grep -i`, deliberately not `grep -qi`. Under `set -o pipefail`, -q exits on the first match and
+    # closes the pipe, curl and tr die of SIGPIPE, and the pipeline reports 141 — so a header that IS
+    # present can be reported absent, intermittently, depending on who wins the race. Reading to EOF
+    # costs nothing on a response header block.
+    curl -sI -m 15 "$@" "$url" | tr -d '\r' | grep -i "^$name:" >/dev/null \
         || { echo "no $name header on $url"; return 1; }
 }
 
@@ -517,10 +531,15 @@ check "the ping route accepts HEAD"               http_status_is 404 "$ORIGIN/pi
 # --- admin exports --------------------------------------------------------------------------------
 
 backup_is_a_sqlite_file() {
-    local head
-    head="$(curl -s -m 60 -b "$ADMIN_JAR" "$ORIGIN/admin/backup" | head -c 15)"
-    [[ "$head" == "SQLite format 3" ]] \
-        || { echo "the backup does not begin 'SQLite format 3' (got '$head')"; return 1; }
+    # Downloaded to a file first, then read. `curl … | head -c 15` would close the pipe fifteen bytes
+    # into a whole SQLite database, curl would die of SIGPIPE, and pipefail would fail this check on a
+    # backup that was perfectly good. Reading `head -c` from a FILE opens no pipe at all.
+    local out="$WORK/backup.db" magic
+    curl -s -m 60 -b "$ADMIN_JAR" -o "$out" "$ORIGIN/admin/backup" \
+        || { echo "the backup download failed"; return 1; }
+    magic="$(head -c 15 "$out")"
+    [[ "$magic" == "SQLite format 3" ]] \
+        || { echo "the backup does not begin 'SQLite format 3' (got '$magic', $(wc -c < "$out") bytes)"; return 1; }
 }
 
 export_is_json() {
@@ -530,10 +549,10 @@ export_is_json() {
     # is an array, not that it holds anything.
     if command -v jq >/dev/null 2>&1; then
         printf '%s' "$body" | jq -e 'type == "array"' >/dev/null \
-            || { echo "the export is not a JSON array: $(printf '%s' "$body" | head -c 120)"; return 1; }
+            || { echo "the export is not a JSON array: ${body:0:120}"; return 1; }
     else
         [[ "${body:0:1}" == "[" ]] \
-            || { echo "the export does not look like a JSON array: $(printf '%s' "$body" | head -c 120)"; return 1; }
+            || { echo "the export does not look like a JSON array: ${body:0:120}"; return 1; }
     fi
 }
 
