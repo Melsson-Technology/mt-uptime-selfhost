@@ -114,7 +114,8 @@ public class AdministrationUiTests : IClassFixture<UiFixture>
         // circuit, so waiting for one can only ever time out — and it did, turning a correct denial
         // into a thirty-second failure that read like the navigation had broken.
         await editorPage.GotoAsync("/users");
-        await AssertDeniedAsync(editorPage);
+        await AssertDeniedAsync(editorPage,
+            editorPage.GetByRole(AriaRole.Button, new() { Name = "+ New user" }));
 
         // A Viewer may look and may not configure.
         var viewerPage = await _fx.SignInAsync(viewer, password);
@@ -123,7 +124,7 @@ public class AdministrationUiTests : IClassFixture<UiFixture>
 
         // Plain GotoAsync for the same reason as above: a refused page has no circuit to wait for.
         await viewerPage.GotoAsync("/monitors/new");
-        await AssertDeniedAsync(viewerPage);
+        await AssertDeniedAsync(viewerPage, Forms.Select(viewerPage, "Type"));
 
         await DeleteUserAsync(admin, editor);
         await DeleteUserAsync(admin, viewer);
@@ -242,21 +243,36 @@ public class AdministrationUiTests : IClassFixture<UiFixture>
 
     // ── helpers ────────────────────────────────────────────────────────────────────────────────
 
-    private static async Task AssertDeniedAsync(IPage page)
+    /// <summary>
+    /// Asserts a page refused this account, in the two ways that matter: it says so, and the thing
+    /// the page exists to do is not on the screen.
+    /// <para>
+    /// The first version of this guessed at wording — "denied", "not allowed", "permission" — and
+    /// failed against a correct refusal, because <c>AccessDenied.razor</c> says
+    /// <b>"Not available to your account"</b> and explains which role you have. The product's words
+    /// were better than the ones I invented, and a test that only pattern-matches prose will keep
+    /// breaking every time someone improves a message.
+    /// </para>
+    /// <para>
+    /// So the load-bearing half is <paramref name="forbiddenControl"/>: the control that would be
+    /// there if access HAD been granted. A denial that still rendered the page's functionality would
+    /// pass a text match and fail this, which is the right way round — the security property is
+    /// "you cannot use it", not "you were told off".
+    /// </para>
+    /// </summary>
+    private static async Task AssertDeniedAsync(IPage page, ILocator forbiddenControl)
     {
-        // Denial can arrive two ways depending on how the page opted in — a redirect to /denied, or
-        // the access-denied component rendered in place. Both are correct; what must not happen is the
-        // page rendering its own content.
         var url = page.Url;
         var body = await page.Locator("body").InnerTextAsync();
 
-        var denied = url.Contains("/denied", StringComparison.OrdinalIgnoreCase)
-                     || url.Contains("/login", StringComparison.OrdinalIgnoreCase)
-                     || body.Contains("not allowed", StringComparison.OrdinalIgnoreCase)
-                     || body.Contains("denied", StringComparison.OrdinalIgnoreCase)
-                     || body.Contains("permission", StringComparison.OrdinalIgnoreCase);
+        // Anchored on the component's heading rather than on a bag of synonyms. It is one string in
+        // one file (AccessDenied.razor); if it changes, this fails once and is corrected once.
+        Assert.True(
+            body.Contains("Not available to your account", StringComparison.Ordinal),
+            $"expected an access-denied page; landed on {url} showing:\n{body[..Math.Min(400, body.Length)]}");
 
-        Assert.True(denied, $"expected access to be refused; landed on {url} showing:\n{body[..Math.Min(400, body.Length)]}");
+        // And the page's own functionality is absent. This is what makes it a security assertion.
+        await Assertions.Expect(forbiddenControl).ToHaveCountAsync(0);
     }
 
     private static async Task CreateUserAsync(IPage page, string username, string role, string password)
