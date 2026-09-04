@@ -105,8 +105,11 @@ public sealed class HttpChecker(IHttpClientFactory httpFactory, ISecretProtector
         }
         catch (Exception ex)
         {
+            // ProbeFailure.Describe, not ex.Message. A rejected server certificate arrives here as
+            // "The SSL connection could not be established, see inner exception." — a sentence with no
+            // information in it. The reason is one level down and used to be discarded.
             sw.Stop();
-            return CheckResult.Down(ex.Message, sw.Elapsed.TotalMilliseconds);
+            return CheckResult.Down(ProbeFailure.Describe(ex), sw.Elapsed.TotalMilliseconds);
         }
         finally
         {

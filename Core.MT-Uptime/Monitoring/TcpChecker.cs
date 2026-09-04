@@ -25,7 +25,7 @@ public sealed class TcpChecker : IMonitorChecker
             return CheckResult.Up(sw.Elapsed.TotalMilliseconds, $"{cfg.Host}:{cfg.Port}");
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex) { sw.Stop(); return CheckResult.Down(ex.Message, sw.Elapsed.TotalMilliseconds); }
+        catch (Exception ex) { sw.Stop(); return CheckResult.Down(ProbeFailure.Describe(ex), sw.Elapsed.TotalMilliseconds); }
     }
 
     private static TcpMonitorConfig Deserialize(string json)

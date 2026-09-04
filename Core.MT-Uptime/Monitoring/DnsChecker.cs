@@ -50,7 +50,7 @@ public sealed class DnsChecker(ILookupClient defaultClient) : IMonitorChecker
             return CheckResult.Up(sw.Elapsed.TotalMilliseconds, Summarise(values));
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex) { sw.Stop(); return CheckResult.Down(ex.Message, sw.Elapsed.TotalMilliseconds); }
+        catch (Exception ex) { sw.Stop(); return CheckResult.Down(ProbeFailure.Describe(ex), sw.Elapsed.TotalMilliseconds); }
     }
 
     /// <summary>How many answer records are named in a check message before the rest are counted.</summary>

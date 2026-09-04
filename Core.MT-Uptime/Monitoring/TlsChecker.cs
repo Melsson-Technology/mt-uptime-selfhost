@@ -54,7 +54,7 @@ public sealed class TlsChecker : IMonitorChecker
             return CheckResult.Up(ms, $"{daysLeft}d", $"Valid for {daysLeft}d", notAfter);
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex) { sw.Stop(); return CheckResult.Down(ex.Message, sw.Elapsed.TotalMilliseconds); }
+        catch (Exception ex) { sw.Stop(); return CheckResult.Down(ProbeFailure.Describe(ex), sw.Elapsed.TotalMilliseconds); }
     }
 
     private static TlsMonitorConfig Deserialize(string json)

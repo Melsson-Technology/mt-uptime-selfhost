@@ -117,7 +117,7 @@ public sealed class MonitorRunner
             }
             catch (Exception ex)
             {
-                result = CheckResult.Down(ex.Message);
+                result = CheckResult.Down(ProbeFailure.Describe(ex));
             }
 
             Process(result);

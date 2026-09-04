@@ -248,19 +248,19 @@ public class HttpCheckerE2E : IClassFixture<CheckerHost>
         Assert.Equal(CheckStatus.Down, result.Status);
         Assert.False(result.Hard);
 
-        // A PRODUCT FINDING, asserted as it behaves.
+        // A PRODUCT FINDING, now FIXED — and this assertion is the record of both halves.
         //
-        // The plan predicted a message mentioning the certificate. There is none: CheckResult.Down
-        // keeps only ex.Message, and for a rejected server certificate that outer message is
-        // "The SSL connection could not be established, see inner exception." — the words
-        // "certificate", "expired" and "chain" are all in the inner AuthenticationException that gets
-        // discarded. This is the commonest HTTPS monitor failure there is, and the alert an operator
-        // receives for it says nothing about why.
+        // It used to read `DoesNotContain("certificate")`, pinning the defect: CheckResult.Down kept
+        // only ex.Message, and for a rejected server certificate that is "The SSL connection could not
+        // be established, see inner exception." The words "certificate", "expired" and "chain" were
+        // all in the inner AuthenticationException, which was discarded — on the commonest HTTPS
+        // monitor failure there is.
         //
-        // Pinned so the day someone fixes it, this test fails and gets rewritten to the better
-        // message rather than the fix going unnoticed.
+        // ProbeFailure.Describe now walks the inner chain, so the reason survives into the alert. The
+        // outer sentence is still there, because it is true and an operator scanning for "SSL" should
+        // find it; what follows it is the part that says what to do.
         Assert.Contains("SSL connection could not be established", result.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("certificate", result.Message!, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("certificate", result.Message!, StringComparison.OrdinalIgnoreCase);
     }
 
     [E2ETheory]

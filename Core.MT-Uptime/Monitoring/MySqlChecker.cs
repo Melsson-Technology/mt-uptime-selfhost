@@ -62,7 +62,7 @@ public sealed class MySqlChecker(ISecretProtector protector) : IMonitorChecker
             sw.Stop();
             return CheckResult.Down(ex.Message, sw.Elapsed.TotalMilliseconds, hard: true);
         }
-        catch (Exception ex) { sw.Stop(); return CheckResult.Down(ex.Message, sw.Elapsed.TotalMilliseconds); }
+        catch (Exception ex) { sw.Stop(); return CheckResult.Down(ProbeFailure.Describe(ex), sw.Elapsed.TotalMilliseconds); }
     }
 
     /// <summary>Decrypts the stored password, or throws <see cref="SecretUnreadableException"/>.</summary>
