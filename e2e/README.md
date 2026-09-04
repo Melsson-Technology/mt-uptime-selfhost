@@ -16,9 +16,14 @@ certificates, a TCP listener, a closed port, a blackholed port, an authoritative
 PostgreSQL with TLS from a locally-minted CA — and gives the tests a root-owned helper that can break
 and restore each one on demand.
 
-> **Status: complete, and never yet run on a real box.** All four tiers are written; nothing in the
-> checker, pipeline or UI tiers has executed against actual target services. Treat the first run as
-> the test of the battery as much as of the product. See "What is built" at the bottom.
+> **Status: complete, and proven on a real box.** All four tiers have run against actual target
+> services — 50/50 targets, 36/36 Tier 0, 21/21 Tier 2, 18/18 Tier 3, and Tier 1 green but for one
+> documented product limitation (MySQL `VerifyFull`, see `MySqlCheckerE2E`).
+>
+> Getting there took eighteen fixes to the battery itself, and it is worth saying what kind: systemd
+> cutting a command at a semicolon, a umask leaking into a directory two hundred lines from where it
+> was set, a glob expanding in the wrong shell, a Blazor circuit that had not connected yet. None of
+> them were reachable by reading the code. That is the argument for this directory existing.
 
 ## What you need
 
