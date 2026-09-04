@@ -58,8 +58,22 @@ public static class Forms
         await circuit;
     }
 
-    /// <summary>The select belonging to the label that starts with <paramref name="labelText"/>.</summary>
-    public static ILocator Select(IPage page, string labelText) =>
+    /// <summary>
+    /// The control of the given kind inside the label whose text <b>begins</b> with
+    /// <paramref name="labelText"/>.
+    /// <para>
+    /// This started as a select-only workaround and was generalised after the same defect appeared
+    /// for an input: <c>&lt;label&gt;Ping URL &lt;span&gt;&lt;input readonly/&gt;&lt;button&gt;Copy
+    /// &lt;/button&gt;&lt;/span&gt;&lt;/label&gt;</c> has the label text "Ping URL Copy", so
+    /// <c>GetByLabel("Ping URL", exact: true)</c> matches nothing at all.
+    /// </para>
+    /// <para>
+    /// The rule is simply: <c>GetByLabel</c> is safe only where the label wraps the control and
+    /// nothing else. Any label containing a second element — a select's options, a button, a unit
+    /// suffix — has text that is not the field name, and belongs here instead.
+    /// </para>
+    /// </summary>
+    private static ILocator Labelled(IPage page, string labelText, string control) =>
         page.Locator("label")
             .Filter(new LocatorFilterOptions
             {
@@ -67,7 +81,13 @@ public static class Forms
                 // "Content-Type" (wrong position) and "Record type" does not match "Type" either.
                 HasTextRegex = new Regex($@"^\s*{Regex.Escape(labelText)}\b"),
             })
-            .Locator("select");
+            .Locator(control);
+
+    /// <summary>The select belonging to the label that starts with <paramref name="labelText"/>.</summary>
+    public static ILocator Select(IPage page, string labelText) => Labelled(page, labelText, "select");
+
+    /// <summary>The input belonging to the label that starts with <paramref name="labelText"/>.</summary>
+    public static ILocator Input(IPage page, string labelText) => Labelled(page, labelText, "input");
 
     /// <summary>Chooses <paramref name="value"/> in that select, by option value.</summary>
     public static Task SelectAsync(IPage page, string labelText, string value) =>

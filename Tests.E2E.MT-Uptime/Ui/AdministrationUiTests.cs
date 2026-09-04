@@ -110,7 +110,10 @@ public class AdministrationUiTests : IClassFixture<UiFixture>
         await Forms.GotoInteractiveAsync(editorPage, "/monitors/new");
         await Assertions.Expect(Forms.Select(editorPage, "Type")).ToBeVisibleAsync();
 
-        await Forms.GotoInteractiveAsync(editorPage, "/users");
+        // Plain GotoAsync, NOT GotoInteractiveAsync. A page the user is refused never starts a Blazor
+        // circuit, so waiting for one can only ever time out — and it did, turning a correct denial
+        // into a thirty-second failure that read like the navigation had broken.
+        await editorPage.GotoAsync("/users");
         await AssertDeniedAsync(editorPage);
 
         // A Viewer may look and may not configure.
@@ -118,7 +121,8 @@ public class AdministrationUiTests : IClassFixture<UiFixture>
         await Forms.GotoInteractiveAsync(viewerPage, "/");
         await Assertions.Expect(viewerPage.Locator("body")).ToBeVisibleAsync();
 
-        await Forms.GotoInteractiveAsync(viewerPage, "/monitors/new");
+        // Plain GotoAsync for the same reason as above: a refused page has no circuit to wait for.
+        await viewerPage.GotoAsync("/monitors/new");
         await AssertDeniedAsync(viewerPage);
 
         await DeleteUserAsync(admin, editor);
@@ -292,7 +296,11 @@ public class AdministrationUiTests : IClassFixture<UiFixture>
         var row = page.Locator("tr", new() { HasText = slug });
         if (await row.CountAsync() == 0) return;
 
-        await row.First.GetByRole(AriaRole.Link).First.ClickAsync();
+        // "Edit" BY NAME. The first link in this row is the public "View" link, which carries
+        // target="_blank": clicking it opens a NEW TAB and leaves this page sitting on the list,
+        // where there is no Delete button — so the test waited thirty seconds for a button that was
+        // never going to appear, on a page it had never left.
+        await row.First.GetByRole(AriaRole.Link, new() { Name = "Edit", Exact = true }).ClickAsync();
         await page.GetByRole(AriaRole.Button, new() { Name = "Delete", Exact = true }).ClickAsync();
         await page.WaitForURLAsync(u => !u.Contains("/edit", StringComparison.Ordinal));
     }

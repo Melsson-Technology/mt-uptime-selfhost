@@ -165,7 +165,10 @@ public static class MonitorForm
     /// </para>
     /// </summary>
     public static Task<string> PushPingUrlAsync(IPage page) =>
-        page.GetByLabel("Ping URL", new() { Exact = true }).InputValueAsync();
+        // Forms.Input, not GetByLabel. This label wraps the input AND a "Copy" button, so its text
+        // content is "Ping URL Copy" and an exact label match finds nothing — the same wrapping-label
+        // problem as the selects, which is why Forms now handles both.
+        Forms.Input(page, "Ping URL").InputValueAsync();
 
     /// <summary>
     /// Waits for a monitor's row on the dashboard to show a status.
