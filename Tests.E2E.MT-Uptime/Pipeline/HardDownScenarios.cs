@@ -93,8 +93,14 @@ public class HardDownScenarios : IClassFixture<PipelineFixture>
 
             await app.WaitForStatusAsync(monitorId, [MonitorStatus.Up], TimeSpan.FromSeconds(20));
 
-            var resolved = Assert.Single(await app.IncidentsAsync(monitorId));
-            Assert.NotNull(resolved.ResolvedAt);
+            // Polled, not asserted outright. Waiting for CurrentStatus to reach Up makes this very
+            // nearly safe — the writer sets both in the same pass — but "very nearly" is what an
+            // intermittent suite is made of, and the sibling scenario proved it by passing on one run
+            // and failing on the next.
+            var resolved = await app.WaitForIncidentResolvedAsync(monitorId);
+
+            // The SAME incident, reopened by nothing. A recovery that resolved one incident while
+            // opening another would also satisfy "there is one resolved incident".
             Assert.Equal(incident.Id, resolved.Id);
         }
     }

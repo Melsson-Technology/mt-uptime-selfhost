@@ -242,6 +242,41 @@ step_packages() {
         || echo "    /etc/default/dnsmasq already current"
 # Written by MT-Uptime's install-targets.sh.
 #
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+#  CONFIG_DIR IS LOAD-BEARING. THIS FILE REPLACES A DISTRIBUTION CONFFILE, SO IT MUST CARRY IT.
+#
+#  /usr/share/dnsmasq/systemd-helper launches dnsmasq as
+#
+#      exec dnsmasq ... ${CONFIG_DIR:+ -7 ${CONFIG_DIR}} ...
+#
+#  and init-system-common never assigns CONFIG_DIR — it comes from THIS file, which the package ships
+#  with `CONFIG_DIR=/etc/dnsmasq.d,...` in it. Overwrite the file without that line and dnsmasq is
+#  launched with no -7 at all: /etc/dnsmasq.d is never read, our zone configuration does not exist as
+#  far as the daemon is concerned, and with no `listen-address` and no `bind-interfaces` it binds the
+#  WILDCARD. That collides with systemd-resolved on 127.0.0.53:53 and the start dies with
+#
+#      failed to create listening socket for port 53: Address already in use
+#
+#  which names no address, because it is the wildcard branch of that error.
+#
+#  It took five wrong theories to find, because the failure is delayed and the sequence is not
+#  obvious:
+#
+#    1. This file is written BEFORE dnsmasq is installed, deliberately, so the package's first start
+#       is already correct. dpkg then finds a conffile it does not own, moves ours to .dpkg-old, and
+#       installs its own — CONFIG_DIR and all.
+#    2. dnsmasq starts from the package's copy, reads /etc/dnsmasq.d, binds 127.0.0.2, and serves the
+#       zone correctly. Every DNS check passes, honestly.
+#    3. The NEXT run of this script sees the file differs from ours and overwrites it. CONFIG_DIR is
+#       lost. Nothing breaks, because dnsmasq is already running.
+#    4. The first restart after that — `break dns` followed by `restore dns` — is the first start
+#       without CONFIG_DIR, and it cannot bind.
+#
+#  So the damage is done by one run and only observed by a later one, after a service restart that
+#  might be hours away. Restating CONFIG_DIR here is what makes this file safe to own.
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+CONFIG_DIR=/etc/dnsmasq.d,.dpkg-dist,.dpkg-old,.dpkg-new
+
 # IGNORE_RESOLVCONF=yes stops the Debian package's resolvconf hook from pointing /etc/resolv.conf at
 # our dnsmasq instance.
 #
@@ -252,29 +287,27 @@ step_packages() {
 # reason.
 #
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
-#  DNSMASQ_EXCEPT="lo" WAS HERE, AND IT WAS ACTIVELY HARMFUL. DO NOT PUT IT BACK.
+#  DNSMASQ_EXCEPT="lo" WAS HERE AND IS DELIBERATELY LEFT OUT — but not for the reason first recorded.
 #
-#  Ubuntu's /usr/share/dnsmasq/systemd-helper turns every word of DNSMASQ_EXCEPT into an
-#  `--except-interface=` flag. Excepting `lo` excludes the only interface our listen-address lives on,
-#  so `bind-interfaces` had nothing left to bind and dnsmasq fell back to the WILDCARD — 0.0.0.0:53,
-#  on every interface of the box.
+#  An earlier revision of this comment blamed it for the wildcard bind and claimed dnsmasq had been
+#  listening on the public interface. That was wrong, and it is corrected here rather than quietly
+#  deleted, because it was wrong in an instructive way: it was inferred from configuration instead of
+#  measured. The actual cause was the missing CONFIG_DIR above; while dnsmasq was healthy it had our
+#  configuration and was bound to 127.0.0.2 exactly as intended.
 #
-#  It looked like it worked. A wildcard listener answers on 127.0.0.2 perfectly well, so every DNS
-#  row in the self-check passed and the checker tier's DNS tests passed. What it actually meant:
+#  What DNSMASQ_EXCEPT actually does here is narrower than either story. init-system-common turns it
+#  into `-I lo`, and separately gates start_resolvconf on it:
 #
-#    * dnsmasq was listening on the PUBLIC interface, not loopback. Harmless in the end only because
-#      `no-resolv` with no upstream leaves nothing to recurse with, and because the security group
-#      admits one address — but it was never what the configuration said, and it is not what anyone
-#      reading `listen-address=127.0.0.2 / bind-interfaces` would believe.
+#      start_resolvconf() { for i in ${DNSMASQ_EXCEPT}; do [ $i = lo ] && return; done; ... }
 #
-#    * It only worked by winning a race at boot. systemd-resolved holds 127.0.0.53:53 and
-#      127.0.0.54:53; a wildcard bind cannot coexist with those. The first `break dns` stopped
-#      dnsmasq, systemd-resolved was by then already holding both, and the restore died with
-#      "failed to create listening socket for port 53: Address already in use" — taking eight
-#      unrelated DNS tests down with it.
+#  So it — NOT IGNORE_RESOLVCONF, which only governs the upstream RESOLV_CONF — is what suppresses
+#  the ExecStartPost hook that registers dnsmasq as the system resolver.
 #
-#  IGNORE_RESOLVCONF alone does the job this was added for. The self-check now asserts the binding
-#  directly rather than inferring it from queries that a wildcard would answer too.
+#  It stays out anyway. On this box the hook fails harmlessly ("Failed to set DNS configuration: Link
+#  lo is loopback device") because systemd-resolved owns resolution, not classic resolvconf; and
+#  whether `-I lo` interferes with binding a loopback listen-address is untested. Adding a second
+#  variable while diagnosing the first is how five wrong theories happened. The self-check's
+#  "the system resolver still works" row is the guard if that hook ever does bite.
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 IGNORE_RESOLVCONF=yes
 EOF
@@ -445,13 +478,30 @@ EOF
 
 step_dns() {
     echo "==> dnsmasq"
+
+    # Clear a failed state before touching the unit. An installer whose whole promise is that
+    # re-running it converges cannot be defeated by the previous run having left the unit in `failed`
+    # — and that is exactly what happened here: dnsmasq failed four times under a bad configuration,
+    # the configuration was then fixed, and the next `systemctl start` still reported failure because
+    # of where the unit had been rather than what it would now do. Two bisects proved the new
+    # configuration started perfectly by hand while the unit refused through systemd.
+    #
+    # Harmless when the unit is healthy, which is the other half of why it belongs here.
+    systemctl reset-failed "$DNS_UNIT" 2>/dev/null || true
+
     # The configuration was written in step_packages, before the package existed. Re-assert it here so
     # that --only dns is a complete step, and restart only on a real change.
     if install_file "$TARGETS/dnsmasq-e2e.conf" /etc/dnsmasq.d/mt-uptime-e2e.conf 0644; then
         systemctl restart "$DNS_UNIT"; echo "    configuration changed — restarted $DNS_UNIT"
     else
-        systemctl start "$DNS_UNIT" 2>/dev/null || systemctl restart "$DNS_UNIT"
-        echo "    configuration unchanged"
+        # `restart` rather than `start` when the unit is not already running: start on a unit systemd
+        # believes is active is a silent no-op, and after a reset-failed we want it genuinely up.
+        if systemctl is-active --quiet "$DNS_UNIT"; then
+            echo "    configuration unchanged — already running"
+        else
+            systemctl restart "$DNS_UNIT"
+            echo "    configuration unchanged — started"
+        fi
     fi
     systemctl enable "$DNS_UNIT" >/dev/null 2>&1 || true
 }

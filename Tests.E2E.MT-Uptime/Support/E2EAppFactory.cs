@@ -213,6 +213,45 @@ public sealed class E2EAppFactory : WebApplicationFactory<Program>
             .ToListAsync(ct);
     }
 
+    /// <summary>
+    /// Polls until a monitor has exactly one incident and it is resolved.
+    /// <para>
+    /// <b>Never assert <c>ResolvedAt</c> straight after the recovery webhook arrives.</b> The alert and
+    /// the incident travel different paths: <c>MonitorRunner</c> enqueues the heartbeat and the
+    /// notification onto two independent channels, the webhook is sent by the dispatcher, and
+    /// <c>ResolvedAt</c> is written by the heartbeat writer handling <c>EventAction.Resolve</c>.
+    /// Nothing orders the two, so the alert routinely lands first.
+    /// </para>
+    /// <para>
+    /// That is correct product behaviour — an alert must not wait on bookkeeping — and it is exactly
+    /// how this suite went intermittent: the same assertion passed on one run against a real box and
+    /// failed on the next, with nothing changed.
+    /// </para>
+    /// </summary>
+    public async Task<Incident> WaitForIncidentResolvedAsync(
+        int monitorId,
+        TimeSpan? within = null,
+        CancellationToken ct = default)
+    {
+        var timeout = within ?? TimeSpan.FromSeconds(30);
+        var deadline = DateTime.UtcNow + timeout;
+        List<Incident> incidents;
+
+        do
+        {
+            incidents = await IncidentsAsync(monitorId, ct);
+            if (incidents.Count == 1 && incidents[0].ResolvedAt is not null) return incidents[0];
+            await Task.Delay(250, ct);
+        }
+        while (DateTime.UtcNow < deadline);
+
+        throw new TimeoutException(
+            $"Monitor {monitorId} did not end with exactly one resolved incident within "
+            + $"{timeout.TotalSeconds:0}s. Found {incidents.Count}: "
+            + string.Join(", ", incidents.Select(i =>
+                $"#{i.Id} {i.Severity} {(i.ResolvedAt is null ? "STILL OPEN" : "resolved")}")));
+    }
+
     /// <summary>Every state transition recorded for a monitor, oldest first.</summary>
     public async Task<List<MonitorEvent>> EventsAsync(int monitorId, CancellationToken ct = default)
     {

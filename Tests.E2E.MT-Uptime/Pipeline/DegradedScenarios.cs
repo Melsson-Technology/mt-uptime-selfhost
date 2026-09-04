@@ -85,7 +85,7 @@ public class DegradedScenarios : IClassFixture<PipelineFixture>
             var recovery = await sink.WaitForAsync(monitorId, "Up", TimeSpan.FromSeconds(60));
             Assert.Equal("Degraded", recovery.PreviousStatus);
 
-            Assert.NotNull(Assert.Single(await app.IncidentsAsync(monitorId)).ResolvedAt);
+            await app.WaitForIncidentResolvedAsync(monitorId);
         }
     }
 

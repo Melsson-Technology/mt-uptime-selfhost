@@ -62,7 +62,7 @@ public class PerTypeScenarios : IClassFixture<PipelineFixture>
         Assert.Equal("Down", up.PreviousStatus);
 
         await app.WaitForStatusAsync(monitorId, [MonitorStatus.Up], TimeSpan.FromSeconds(30));
-        Assert.NotNull(Assert.Single(await app.IncidentsAsync(monitorId)).ResolvedAt);
+        await app.WaitForIncidentResolvedAsync(monitorId);
     }
 
     [E2EFact]

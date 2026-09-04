@@ -66,7 +66,7 @@ public class PushScenarios : IClassFixture<PipelineFixture>
         Assert.Equal("Down", recovery.PreviousStatus);
         Assert.Equal("Ping received", recovery.Message);
 
-        Assert.NotNull(Assert.Single(await app.IncidentsAsync(monitorId)).ResolvedAt);
+        await app.WaitForIncidentResolvedAsync(monitorId);
     }
 
     [E2ETheory]
