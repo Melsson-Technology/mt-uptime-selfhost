@@ -29,10 +29,22 @@
 #
 #  To get the full first-run sequence back, throw the database away and restart the service:
 #      sudo systemctl stop mt-uptime
-#      sudo rm -f /var/lib/mt-uptime/mt-uptime.db*
+#      sudo sh -c 'rm -f /var/lib/mt-uptime/mt-uptime.db*'
 #      sudo systemctl start mt-uptime
 #  The key ring in /var/lib/mt-uptime/keys must survive that, or every stored secret in a restored
 #  database becomes undecryptable — which is the failure mode the restore rehearsal exists to catch.
+#
+#  THE `sh -c` IS LOAD-BEARING, and this advice used to be wrong without it.
+#
+#  /var/lib/mt-uptime is mode 0700 root-owned — the check table below asserts exactly that. An
+#  ordinary user's shell therefore cannot READ the directory, so `mt-uptime.db*` matches nothing and
+#  bash passes the pattern through literally. `sudo` then applies to `rm`, not to the glob that was
+#  expanded before sudo ever ran, and `rm -f` is handed a file named `mt-uptime.db*`, does not find
+#  it, and suppresses the error. Exit 0, nothing deleted, no output.
+#
+#  The result is worse than a plain failure: the database survives, the administrator survives, this
+#  script correctly reports that setup is already complete, and its refusal recommends the same
+#  no-op again. Quoting the glob so it expands in the root shell is the whole fix.
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 #
 #  PRIVILEGE
@@ -76,7 +88,7 @@ while [[ $# -gt 0 ]]; do
         --port)         APP_PORT="${2:?--port needs a number}"; shift 2 ;;
         --port=*)       APP_PORT="${1#--port=}"; shift ;;
         --no-ratelimit) DO_RATELIMIT=0; shift ;;
-        -h|--help)      sed -n '2,52p' "$0"; exit 0 ;;
+        -h|--help)      sed -n '2,64p' "$0"; exit 0 ;;
         *) echo "unknown option: $1" >&2; echo "try: $0 --help" >&2; exit 1 ;;
     esac
 done
@@ -110,6 +122,46 @@ if ! systemctl list-unit-files "$SERVICE.service" --no-legend 2>/dev/null | grep
         echo
         echo "Install MT-Uptime first, by hand, following deploy/README-deploy.md's \"short version\"."
         echo "Doing it by hand is part of the test: every README command that misbehaves is a finding."
+    } >&2
+    exit 1
+fi
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+#  WAIT FOR THE APPLICATION BEFORE READING ANYTHING IT WRITES AT STARTUP
+#
+#  `systemctl start mt-uptime` returns as soon as the process launches. The application then applies
+#  migrations — on an empty database that is every table from scratch — and only AFTERWARDS does
+#  SetupToken.EnsureAsync write /var/lib/mt-uptime/setup-token.
+#
+#  Without this wait, a smoke run started immediately after a restart could read that file
+#  microseconds before it exists, conclude first-run setup was already complete, and refuse — with
+#  advice to delete a database that was already empty.
+#
+#  /healthz is not merely a convenient gate, it is a SUFFICIENT one: UseMtUptimeAsync applies the
+#  migrations and settles the setup token before the first request is served, so an instance that
+#  answers has already finished both.
+#
+#  Added while chasing a "no setup token" that turned out to be the unexpanded-glob problem in the
+#  header comment above, not a race at all. It is kept because the race is real regardless — the
+#  window is small and the whole point of this script is to run right after a restart — and because
+#  it converts "mysteriously refuses" into "waits, then works".
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+printf '    waiting for %s to answer /healthz' "$SERVICE"
+app_ready=0
+for ((attempt = 0; attempt < 60; attempt++)); do
+    if curl -s -o /dev/null -m 2 "$ORIGIN/healthz"; then app_ready=1; break; fi
+    printf '.'
+    sleep 1
+done
+echo
+
+if [[ $app_ready -eq 0 ]]; then
+    {
+        echo "REFUSING: $SERVICE did not answer $ORIGIN/healthz within 60s."
+        echo
+        echo "The service unit exists, so this is not a missing install. Check:"
+        echo "    systemctl status $SERVICE"
+        echo "    journalctl -u $SERVICE -n 50 --no-pager"
     } >&2
     exit 1
 fi
@@ -197,7 +249,7 @@ else
             echo "    sudo tee -a $MANIFEST <<< 'MTU_ADMIN_PASSWORD=<password>'"
             echo "or start from an empty database, which reopens the wizard:"
             echo "    sudo systemctl stop $SERVICE"
-            echo "    sudo rm -f $STATE_DIR/mt-uptime.db*        # keep $STATE_DIR/keys"
+            echo "    sudo sh -c 'rm -f $STATE_DIR/mt-uptime.db*'   # keep $STATE_DIR/keys"
             echo "    sudo systemctl start $SERVICE"
         } >&2
         exit 1
