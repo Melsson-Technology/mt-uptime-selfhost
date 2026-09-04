@@ -71,24 +71,70 @@ public class MySqlCheckerE2E : IClassFixture<CheckerHost>
     [E2ETheory]
     [InlineData("localhost")]
     [InlineData("127.0.0.1")]
-    public async Task VerifyFull_connects_when_the_host_matches_the_certificate(string host)
+    public async Task VerifyFull_is_refused_even_though_the_certificate_is_valid(string host)
     {
-        // VerifyFull additionally checks the name. The leaf's SAN carries
-        // `DNS:localhost, DNS:e2e.test, IP:127.0.0.1, IP:127.0.0.2, IP:::1`, so both spellings are in
-        // it — and both are worth asserting, because an IP in a SAN is a different X.509 name type
-        // from a DNS name and a library that handled only one of them would pass on the other by
-        // accident.
+        // A PRODUCT LIMITATION, found on the first real box and asserted as it behaves.
         //
-        // Written as a theory after the first run on a real box, where the single "localhost" case
-        // failed while VerifyCa against 127.0.0.1 passed. That test moved TWO variables at once — the
-        // TLS mode and the host — so it could not say which one broke. This can.
+        // VerifyFull cannot connect to this server. VerifyCa can, on the same certificate, over the
+        // same connection. So can MySQL's own client in --ssl-mode=VERIFY_IDENTITY, which is the
+        // strictest mode it offers. So can Npgsql's VerifyFull, against a certificate minted by the
+        // identical call from the identical CA.
+        //
+        // Everything checkable about the certificate is right: `openssl verify -purpose sslserver`
+        // passes, the SAN carries DNS:localhost and IP:127.0.0.1, the EKU is serverAuth, the CA is in
+        // the system trust store — and .NET itself accepts that CA elsewhere in this very tier, in
+        // A_trusted_certificate_is_Up_over_HTTPS.
+        //
+        // What the product now reports, thanks to ProbeFailure.Describe:
+        //
+        //     SSL Authentication Error — The remote certificate was rejected due to the following
+        //     error: RemoteCertificateChainErrors
+        //
+        // CHAIN errors, not name errors — which is why this is a theory over both spellings and both
+        // fail identically. The one structural difference found between this and every validation
+        // that succeeds: mysqld sends TWO certificates in the handshake (leaf + its own CA, because
+        // `ssl-ca` is configured) where nginx sends one. That is a correlation, not a proof — .NET
+        // reports SslPolicyErrors granularity and the specific X509ChainStatus is not recoverable
+        // from the exception — so it is recorded as the leading hypothesis rather than as the cause.
+        //
+        // Why this matters to a user rather than only to us: the editor describes VerifyFull as "the
+        // only mode that resists an on-path attacker, and the right choice for any database reached
+        // over a network you do not control". A private CA is the usual reason to need it. If it does
+        // not work against a MySQL server configured with ssl-ca — a common configuration — then the
+        // mode that the product recommends most strongly is the one that fails.
+        //
+        // The next step, deliberately not taken here because it perturbs the box mid-run: comment out
+        // `ssl-ca` in the server's config and re-run. If VerifyFull then connects, the hypothesis is
+        // confirmed and the question becomes what MT-Uptime should do about it.
+        //
+        // Asserted as it behaves so the day it changes, this fails and gets rewritten — the same way
+        // HttpCheckerE2E's certificate-message assertion was flipped once the reason stopped being
+        // discarded.
+        await AssertVerifyFullRefusedAsync(host);
+    }
+
+    private async Task AssertVerifyFullRefusedAsync(string host)
+    {
         var result = await ProbeAsync(host: host, tls: DbTlsMode.VerifyFull);
 
-        // The message is in the assertion deliberately. `Expected: Up / Actual: Down` is what the
-        // first run reported, and it cost a round trip to the box to learn nothing: the driver's own
-        // words are the entire diagnostic for a TLS failure.
-        Assert.True(result.Status == CheckStatus.Up,
-            $"VerifyFull against '{host}' was {result.Status}: {result.Message}");
+        // Down, and soft — a handshake failure is a transport problem, not the server's verdict on
+        // itself, so it must still burn the retry window rather than confirm an outage at once.
+        Assert.Equal(CheckStatus.Down, result.Status);
+        Assert.False(result.Hard);
+
+        // The message must name the CHAIN, and this is the assertion that pins the finding. If it
+        // ever says NameMismatch instead, the cause is something else entirely and the comment above
+        // is wrong. If it becomes Up, the limitation is gone and this test should be rewritten to
+        // assert that.
+        Assert.Contains("RemoteCertificateChainErrors", result.Message,
+            StringComparison.Ordinal);
+
+        // And the counterpart, in the same test, on the same connection: VerifyCa succeeds. Without
+        // this the test would also pass on a box where MySQL was simply unreachable, which is exactly
+        // the kind of hollow assertion this battery exists to avoid.
+        var verifyCa = await ProbeAsync(host: host, tls: DbTlsMode.VerifyCa);
+        Assert.True(verifyCa.Status == CheckStatus.Up,
+            $"VerifyCa against '{host}' should still connect, but was {verifyCa.Status}: {verifyCa.Message}");
     }
 
     [E2EFact]

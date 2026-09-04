@@ -788,6 +788,40 @@ DNS_UNIT=$DNS_UNIT
 BLACKHOLE_UNIT=$BLACKHOLE_UNIT
 EOF
 
+    # ─────────────────────────────────────────────────────────────────────────────────────────────
+    #  CARRY smoke.sh's KEYS FORWARD. THEY CANNOT BE REGENERATED.
+    #
+    #  This function rewrites the manifest in full rather than patching it, which is right for
+    #  everything above: a key from an older layout can never survive. But smoke.sh appends MTU_* —
+    #  the administrator's username and password — and those come from the FIRST-RUN WIZARD, which is
+    #  a one-shot. The setup token is destroyed the moment an account exists, so a password lost here
+    #  cannot be recovered by re-running anything; it costs the instance's database.
+    #
+    #  This script sources the existing manifest at startup to carry the database passwords forward,
+    #  so the values are already in scope. They were simply never written back, and the failure was
+    #  invisible until someone ran the UI tier: `install-targets.sh` after `smoke.sh` silently
+    #  deleted the only copy, and `run-tests.sh --tier ui` then refused for want of credentials that
+    #  had existed an hour earlier.
+    #
+    #  Appended rather than placed in the heredoc above, because on a box that has never been smoked
+    #  these are unset and should be absent rather than present-and-empty — Support/Targets.cs treats
+    #  an empty value as missing, but a reader doing `[[ -n $MTU_ADMIN_PASSWORD ]]` would not.
+    # ─────────────────────────────────────────────────────────────────────────────────────────────
+    if [[ -n "${MTU_ADMIN_PASSWORD:-}" ]]; then
+        {
+            echo
+            echo "# Written by smoke.sh, preserved across install-targets.sh runs. The setup wizard"
+            echo "# that produced these is a one-shot; losing them costs the database."
+            echo "MTU_BASE_URL=${MTU_BASE_URL:-}"
+            echo "MTU_APP_URL=${MTU_APP_URL:-}"
+            echo "MTU_ADMIN_USER=${MTU_ADMIN_USER:-}"
+            echo "MTU_ADMIN_EMAIL=${MTU_ADMIN_EMAIL:-}"
+            echo "MTU_ADMIN_PASSWORD=${MTU_ADMIN_PASSWORD}"
+            echo "MTU_SMOKED_AT=${MTU_SMOKED_AT:-}"
+        } >> "$MANIFEST"
+        echo "    carried the administrator forward from a previous smoke.sh"
+    fi
+
     # 0640 root:<test user>, so the test process can read the database passwords it needs while no
     # other local account can.
     if id -u "$E2E_TEST_USER" >/dev/null 2>&1; then
