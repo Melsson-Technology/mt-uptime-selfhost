@@ -33,8 +33,9 @@ public class AlertingUiTests : IClassFixture<UiFixture>
 
         var name = $"u2-{Guid.NewGuid():N}"[..14];
 
-        await page.GotoAsync("/channels/new");
-        await Forms.SelectAsync(page, "Type", "Webhook");
+        await Forms.GotoInteractiveAsync(page, "/channels/new");
+        await Forms.SelectAndConfirmAsync(page, "Type", "Webhook",
+            page.GetByLabel("Target URL", new() { Exact = true }));
         await page.GetByLabel("Name", new() { Exact = true }).FillAsync(name);
 
         // The URL field's label changes with the type — "Target URL" for a webhook, "Slack webhook
@@ -52,7 +53,10 @@ public class AlertingUiTests : IClassFixture<UiFixture>
 
         await page.GetByRole(AriaRole.Button, new() { Name = "Save", Exact = true }).ClickAsync();
         await page.WaitForURLAsync(u => !u.Contains("/channels/new", StringComparison.Ordinal));
-        await Assertions.Expect(page.GetByText(name)).ToBeVisibleAsync();
+        // The row, not any text — same reason as CreateUserAsync's assertion. This page also shows a
+        // confirmation message carrying the name, and matching that would pass whether or not the
+        // channel was saved.
+        await Assertions.Expect(page.Locator("tr", new() { HasText = name }).First).ToBeVisibleAsync();
 
         await DeleteChannelAsync(page, name);
     }
@@ -76,7 +80,7 @@ public class AlertingUiTests : IClassFixture<UiFixture>
         await CreateWebhookChannelAsync(page, channel, sink.Url);
 
         var name = $"u4-{Guid.NewGuid():N}"[..14];
-        await page.GotoAsync("/monitors/new");
+        await Forms.GotoInteractiveAsync(page, "/monitors/new");
         await MonitorForm.BeginAsync(page, MonitorType.Http, name);
         await page.GetByLabel("URL", new() { Exact = true }).FillAsync($"{Targets.HttpBaseUrl}/toggle");
         await MonitorForm.SaveAsync(page);
@@ -112,7 +116,7 @@ public class AlertingUiTests : IClassFixture<UiFixture>
         var page = await _fx.SignInAsync();
 
         var name = $"u5-{Guid.NewGuid():N}"[..14];
-        await page.GotoAsync("/monitors/new");
+        await Forms.GotoInteractiveAsync(page, "/monitors/new");
         await MonitorForm.BeginAsync(page, MonitorType.Http, name);
         await page.GetByLabel("URL", new() { Exact = true }).FillAsync($"{Targets.HttpBaseUrl}/toggle");
         await MonitorForm.SaveAsync(page);
@@ -124,7 +128,7 @@ public class AlertingUiTests : IClassFixture<UiFixture>
         {
             await MonitorForm.WaitForStatusAsync(page, name, "Down", timeoutMs: 30_000);
 
-            await page.GotoAsync("/incidents");
+            await Forms.GotoInteractiveAsync(page, "/incidents");
             var row = page.Locator("tr", new() { HasText = name });
             await Assertions.Expect(row.First).ToBeVisibleAsync(new() { Timeout = 20_000 });
 
@@ -148,7 +152,7 @@ public class AlertingUiTests : IClassFixture<UiFixture>
             broken.RestoreNow();
         }
 
-        await page.GotoAsync("/");
+        await Forms.GotoInteractiveAsync(page, "/");
         await MonitorForm.WaitForStatusAsync(page, name, "Up", timeoutMs: 30_000);
         await MonitorsUiTests.DeleteMonitorAsync(page, name);
     }
@@ -170,14 +174,14 @@ public class AlertingUiTests : IClassFixture<UiFixture>
         await CreateWebhookChannelAsync(page, channel, sink.Url);
 
         var name = $"u10-{Guid.NewGuid():N}"[..15];
-        await page.GotoAsync("/monitors/new");
+        await Forms.GotoInteractiveAsync(page, "/monitors/new");
         await MonitorForm.BeginAsync(page, MonitorType.Http, name);
         await page.GetByLabel("URL", new() { Exact = true }).FillAsync($"{Targets.HttpBaseUrl}/toggle");
         await MonitorForm.SaveAsync(page);
         await MonitorForm.WaitForStatusAsync(page, name, "Up");
 
         var window = $"u10-win-{Guid.NewGuid():N}"[..16];
-        await page.GotoAsync("/maintenance/new");
+        await Forms.GotoInteractiveAsync(page, "/maintenance/new");
         await page.GetByLabel("Name", new() { Exact = true }).FillAsync(window);
 
         // A one-off window spanning now. Written in the browser's local time because the input is a
@@ -206,7 +210,7 @@ public class AlertingUiTests : IClassFixture<UiFixture>
             // The monitor still goes Down — suppression is about the ALERT, not about the state. A
             // maintenance window that hid the outage from the dashboard too would be actively
             // dangerous.
-            await page.GotoAsync("/");
+            await Forms.GotoInteractiveAsync(page, "/");
             await MonitorForm.WaitForStatusAsync(page, name, "Down", timeoutMs: 30_000);
 
             // Long enough that a delivery which was merely slow would have arrived.
@@ -227,8 +231,9 @@ public class AlertingUiTests : IClassFixture<UiFixture>
 
     private static async Task CreateWebhookChannelAsync(IPage page, string name, string url)
     {
-        await page.GotoAsync("/channels/new");
-        await Forms.SelectAsync(page, "Type", "Webhook");
+        await Forms.GotoInteractiveAsync(page, "/channels/new");
+        await Forms.SelectAndConfirmAsync(page, "Type", "Webhook",
+            page.GetByLabel("Target URL", new() { Exact = true }));
         await page.GetByLabel("Name", new() { Exact = true }).FillAsync(name);
         await page.GetByLabel("Target URL", new() { Exact = true }).FillAsync(url);
         await page.GetByLabel("Apply to all monitors (default channel)").CheckAsync();
@@ -240,7 +245,7 @@ public class AlertingUiTests : IClassFixture<UiFixture>
     {
         page.Dialog += async (_, dialog) => await dialog.AcceptAsync();
 
-        await page.GotoAsync("/channels");
+        await Forms.GotoInteractiveAsync(page, "/channels");
         var row = page.Locator("tr", new() { HasText = name });
         if (await row.CountAsync() == 0) return;
 
@@ -253,7 +258,7 @@ public class AlertingUiTests : IClassFixture<UiFixture>
     {
         page.Dialog += async (_, dialog) => await dialog.AcceptAsync();
 
-        await page.GotoAsync("/maintenance");
+        await Forms.GotoInteractiveAsync(page, "/maintenance");
         var row = page.Locator("tr", new() { HasText = name });
         if (await row.CountAsync() == 0) return;
 

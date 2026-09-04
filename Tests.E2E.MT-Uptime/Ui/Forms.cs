@@ -28,6 +28,36 @@ namespace MT.Uptime.Tests.E2E.Ui;
 /// </summary>
 public static class Forms
 {
+    /// <summary>
+    /// Navigates to an <c>@rendermode InteractiveServer</c> page and waits for its circuit.
+    /// <para>
+    /// Blazor Server serves the first render over plain HTTP and then opens a WebSocket to
+    /// <c>/_blazor</c>. Anything typed or clicked before that socket exists is applied to the DOM and
+    /// never reaches the component — a filled field keeps its old value in the model, and Save
+    /// persists what the operator did not type.
+    /// </para>
+    /// <para>
+    /// The socket is the honest signal, and Playwright can watch for it. <c>window.Blazor</c> is not:
+    /// the object exists as soon as the script loads, well before the circuit is connected. A fixed
+    /// sleep is not either — it is only a guess that happens to be long enough on an idle box.
+    /// </para>
+    /// <para>
+    /// The wait is armed BEFORE the navigation, because a socket opened while nobody was listening
+    /// cannot be waited for afterwards.
+    /// </para>
+    /// </summary>
+    public static async Task GotoInteractiveAsync(IPage page, string path)
+    {
+        var circuit = page.WaitForWebSocketAsync(new PageWaitForWebSocketOptions
+        {
+            Predicate = ws => ws.Url.Contains("/_blazor", StringComparison.Ordinal),
+            Timeout = 30_000,
+        });
+
+        await page.GotoAsync(path);
+        await circuit;
+    }
+
     /// <summary>The select belonging to the label that starts with <paramref name="labelText"/>.</summary>
     public static ILocator Select(IPage page, string labelText) =>
         page.Locator("label")
@@ -42,4 +72,63 @@ public static class Forms
     /// <summary>Chooses <paramref name="value"/> in that select, by option value.</summary>
     public static Task SelectAsync(IPage page, string labelText, string value) =>
         Select(page, labelText).SelectOptionAsync(value);
+
+    /// <summary>
+    /// Chooses a value and waits for the re-render it is supposed to cause, retrying the choice if
+    /// nothing happens.
+    /// <para>
+    /// <b>Every configuring page here is <c>@rendermode InteractiveServer</c>.</b> Blazor renders the
+    /// page once over plain HTTP, then opens a WebSocket and re-renders through the circuit. In the
+    /// gap between those two, a <c>select</c> is present and actionable — Playwright will happily
+    /// operate it — but the change event reaches no component. The DOM's selected option moves and
+    /// the application never learns of it.
+    /// </para>
+    /// <para>
+    /// That is invisible until something depends on the re-render. On the first real run of this tier
+    /// it took out seven tests: the monitor type select appeared to work, the type-specific fields
+    /// never appeared, and <c>GetByLabel("Host")</c> waited thirty seconds for markup that was never
+    /// going to be rendered. It failed for MySQL and passed for PostgreSQL in the same run, on
+    /// identical markup, which is the signature of a race rather than a selector.
+    /// </para>
+    /// <para>
+    /// Waiting for <c>window.Blazor</c> is necessary and not sufficient — the script object exists
+    /// before the circuit is connected. So this asserts the EFFECT instead: choose, wait for the
+    /// element that choice should bring into being, and if it does not arrive, choose again. A retry
+    /// is honest here in a way it usually is not, because the failure being retried is "the
+    /// application was not listening yet", which a second attempt genuinely fixes.
+    /// </para>
+    /// </summary>
+    public static async Task SelectAndConfirmAsync(
+        IPage page,
+        string labelText,
+        string value,
+        ILocator appears,
+        int attempts = 3)
+    {
+        for (var attempt = 1; attempt <= attempts; attempt++)
+        {
+            await Select(page, labelText).SelectOptionAsync(value);
+
+            try
+            {
+                await appears.WaitForAsync(new LocatorWaitForOptions
+                {
+                    State = WaitForSelectorState.Visible,
+                    Timeout = 5_000,
+                });
+                return;
+            }
+            catch (Exception) when (attempt < attempts)
+            {
+                // The circuit was not live. Give it a moment and choose again — re-selecting the same
+                // value fires a fresh change event, which a connected circuit will act on.
+                await page.WaitForTimeoutAsync(1_000);
+            }
+        }
+
+        throw new TimeoutException(
+            $"Choosing '{value}' for '{labelText}' never produced the expected re-render, after "
+            + $"{attempts} attempts. The Blazor circuit is probably not connecting at all — check "
+            + "that nginx is forwarding WebSocket upgrades.");
+    }
 }

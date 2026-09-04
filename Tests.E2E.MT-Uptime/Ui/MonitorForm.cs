@@ -42,8 +42,13 @@ public static class MonitorForm
     /// </summary>
     public static async Task<IPage> BeginAsync(IPage page, MonitorType type, string name)
     {
-        await page.GotoAsync("/monitors/new");
-        await Forms.SelectAsync(page, "Type", type.ToString());
+        await Forms.GotoInteractiveAsync(page, "/monitors/new");
+
+        // Choose the type and WAIT FOR THE FORM TO BECOME THAT TYPE. Selecting alone is not enough
+        // before the Blazor circuit is live — see Forms.SelectAndConfirmAsync for what that costs.
+        await Forms.SelectAndConfirmAsync(page, "Type", type.ToString(),
+            page.GetByLabel(TypeAppearsAs(type), new() { Exact = true }));
+
         await page.GetByLabel("Name", new() { Exact = true }).FillAsync(name);
 
         // Push calls its cadence something else, because for a heartbeat monitor the interval is a
@@ -62,6 +67,26 @@ public static class MonitorForm
 
         return page;
     }
+
+    /// <summary>
+    /// A field that exists on this monitor type's form and on no earlier-rendered one — the proof
+    /// that choosing the type actually re-rendered the form rather than merely moving a select.
+    /// <para>
+    /// Http's is "URL" rather than something exotic because Http is the default: the form already
+    /// shows it, so for that one type the wait is satisfied immediately and correctly.
+    /// </para>
+    /// </summary>
+    private static string TypeAppearsAs(MonitorType type) => type switch
+    {
+        MonitorType.Http => "URL",
+        MonitorType.Tcp => "Host",
+        MonitorType.Dns => "Hostname",
+        MonitorType.MySql => "Database",
+        MonitorType.Postgres => "Database",
+        MonitorType.Tls => "Warn when within (days)",
+        MonitorType.Push => "Expected period (s)",
+        _ => throw new ArgumentOutOfRangeException(nameof(type), type, "no probe field for this type"),
+    };
 
     /// <summary>Fills the type-specific half of the form and saves, returning the monitor's name.</summary>
     public static async Task CreateAsync(IPage page, MonitorType type, string name)

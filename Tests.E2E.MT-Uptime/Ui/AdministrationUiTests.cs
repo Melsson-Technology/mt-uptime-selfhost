@@ -30,7 +30,7 @@ public class AdministrationUiTests : IClassFixture<UiFixture>
         await MonitorForm.WaitForStatusAsync(page, monitorName, "Up");
 
         var slug = $"u6-{Guid.NewGuid():N}"[..12].ToLowerInvariant();
-        await page.GotoAsync("/status-pages/new");
+        await Forms.GotoInteractiveAsync(page, "/status-pages/new");
         await page.GetByLabel("Title", new() { Exact = true }).FillAsync("E2E status");
         await page.GetByLabel("Slug", new() { Exact = true }).FillAsync(slug);
         await page.GetByLabel("Published (visible at /status/<slug>)").CheckAsync();
@@ -73,7 +73,7 @@ public class AdministrationUiTests : IClassFixture<UiFixture>
 
         await MonitorForm.CreateAsync(page, MonitorType.Tcp, untagged);
 
-        await page.GotoAsync("/");
+        await Forms.GotoInteractiveAsync(page, "/");
         await Assertions.Expect(page.GetByRole(AriaRole.Link, new() { Name = tagged })).ToBeVisibleAsync();
         await Assertions.Expect(page.GetByRole(AriaRole.Link, new() { Name = untagged })).ToBeVisibleAsync();
 
@@ -107,18 +107,18 @@ public class AdministrationUiTests : IClassFixture<UiFixture>
 
         // An Editor may configure monitors and may not manage users.
         var editorPage = await _fx.SignInAsync(editor, password);
-        await editorPage.GotoAsync("/monitors/new");
+        await Forms.GotoInteractiveAsync(editorPage, "/monitors/new");
         await Assertions.Expect(Forms.Select(editorPage, "Type")).ToBeVisibleAsync();
 
-        await editorPage.GotoAsync("/users");
+        await Forms.GotoInteractiveAsync(editorPage, "/users");
         await AssertDeniedAsync(editorPage);
 
         // A Viewer may look and may not configure.
         var viewerPage = await _fx.SignInAsync(viewer, password);
-        await viewerPage.GotoAsync("/");
+        await Forms.GotoInteractiveAsync(viewerPage, "/");
         await Assertions.Expect(viewerPage.Locator("body")).ToBeVisibleAsync();
 
-        await viewerPage.GotoAsync("/monitors/new");
+        await Forms.GotoInteractiveAsync(viewerPage, "/monitors/new");
         await AssertDeniedAsync(viewerPage);
 
         await DeleteUserAsync(admin, editor);
@@ -134,7 +134,7 @@ public class AdministrationUiTests : IClassFixture<UiFixture>
         await _fx.StartAsync();
         var page = await _fx.SignInAsync();
 
-        await page.GotoAsync("/settings");
+        await Forms.GotoInteractiveAsync(page, "/settings");
 
         // Settings holds two independent EditForms — email and retention — each with its own "Save".
         // The Save is located by the form that CONTAINS the retention field rather than by index: an
@@ -257,20 +257,26 @@ public class AdministrationUiTests : IClassFixture<UiFixture>
 
     private static async Task CreateUserAsync(IPage page, string username, string role, string password)
     {
-        await page.GotoAsync("/users");
+        await Forms.GotoInteractiveAsync(page, "/users");
         await page.GetByRole(AriaRole.Button, new() { Name = "+ New user" }).ClickAsync();
         await page.GetByLabel("Username", new() { Exact = true }).FillAsync(username);
         await Forms.SelectAsync(page, "Role", role);
         await page.GetByLabel("Initial password", new() { Exact = true }).FillAsync(password);
         await page.GetByRole(AriaRole.Button, new() { Name = "Create", Exact = true }).ClickAsync();
-        await Assertions.Expect(page.GetByText(username)).ToBeVisibleAsync();
+
+        // Scoped to the TABLE ROW, not to any text on the page. A bare GetByText(username) matches
+        // twice — the "Created <name>." confirmation banner and the row itself — which Playwright
+        // reports as a strict-mode violation rather than picking one. That is the right behaviour and
+        // it caught a genuinely weak assertion: the banner appears whether or not the user was
+        // actually persisted, so matching it would have proved nothing.
+        await Assertions.Expect(page.Locator("tr", new() { HasText = username }).First).ToBeVisibleAsync();
     }
 
     private static async Task DeleteUserAsync(IPage page, string username)
     {
         page.Dialog += async (_, dialog) => await dialog.AcceptAsync();
 
-        await page.GotoAsync("/users");
+        await Forms.GotoInteractiveAsync(page, "/users");
         var row = page.Locator("tr", new() { HasText = username });
         if (await row.CountAsync() == 0) return;
 
@@ -282,7 +288,7 @@ public class AdministrationUiTests : IClassFixture<UiFixture>
     {
         page.Dialog += async (_, dialog) => await dialog.AcceptAsync();
 
-        await page.GotoAsync("/status-pages");
+        await Forms.GotoInteractiveAsync(page, "/status-pages");
         var row = page.Locator("tr", new() { HasText = slug });
         if (await row.CountAsync() == 0) return;
 

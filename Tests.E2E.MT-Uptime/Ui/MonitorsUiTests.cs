@@ -108,7 +108,7 @@ public class MonitorsUiTests : IClassFixture<UiFixture>
         await page.Locator("tr", new() { HasText = name }).GetByRole(AriaRole.Link, new() { Name = "Edit" }).ClickAsync();
         await Assertions.Expect(page.GetByLabel("Interval (s)", new() { Exact = true })).ToHaveValueAsync("30");
 
-        await page.GotoAsync("/");
+        await Forms.GotoInteractiveAsync(page, "/");
         await DeleteMonitorAsync(page, name);
 
         // Gone from the dashboard, and gone for good: a reload is what distinguishes a row removed
@@ -130,7 +130,7 @@ public class MonitorsUiTests : IClassFixture<UiFixture>
     {
         page.Dialog += async (_, dialog) => await dialog.AcceptAsync();
 
-        await page.GotoAsync("/");
+        await Forms.GotoInteractiveAsync(page, "/");
         var row = page.Locator("tr", new() { HasText = name });
         if (await row.CountAsync() == 0) return;
 
