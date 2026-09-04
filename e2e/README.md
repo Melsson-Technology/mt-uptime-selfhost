@@ -116,7 +116,7 @@ shell for the asking.
 ## Why this is not in the solution
 
 `Tests.E2E.MT-Uptime` is **not** a member of `MT-Uptime.Engine.slnx`, so `./scripts/test.sh` never sees
-it and continues to report exactly 360 hermetic tests. Run this suite with `./e2e/run-tests.sh`, or by
+it and continues to report exactly 371 hermetic tests. Run this suite with `./e2e/run-tests.sh`, or by
 path with `dotnet test engine/Tests.E2E.MT-Uptime`.
 
 The whole assembly also runs its tests **one at a time**
@@ -142,13 +142,13 @@ certificates at all.
 
 | | |
 |---|---|
-| ✅ `install-targets.sh` + `targets/` | The whole target layer, with a 47-assertion self-check |
+| ✅ `install-targets.sh` + `targets/` | The whole target layer, with a 49-assertion self-check |
 | ✅ `Tests.E2E.MT-Uptime` harness | `Targets`, `E2EFact`/`E2ETheory`/`UIFact`, `CheckerHost`, `E2EAppFactory`, and 7 harness tests |
 | ✅ `smoke.sh` (Tier 0) | 30-odd checks; completes first-run setup and records the administrator |
 | ✅ `run-tests.sh` | Tier selection, the manifest gate, the Chromium install, the empty-tier guard |
 | ✅ `install-mt-uptime.sh` | A replay of the deploy README, for the second install onward |
 | ✅ `Support/TargetControl.cs`, `Support/WebhookSink.cs` | Break/restore with restore-on-dispose; an HTTP endpoint alerts are delivered to |
-| ✅ Tier 1 — the checker matrix | **113 tests** across the six actively-probed monitor types |
+| ✅ Tier 1 — the checker matrix | **114 tests** across the six actively-probed monitor types |
 | ✅ Tier 2 — pipeline scenarios | **21 scenarios** driving the whole running engine, target to webhook |
 | ✅ Tier 3 — the browser tier | **18 tests** driving the installed instance through headless Chromium |
 

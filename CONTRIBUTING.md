@@ -45,7 +45,7 @@ You need a **.NET 10 SDK**, specifically a 10.0.3xx build — `global.json` pins
 you if yours is wrong. Nothing else: no database to install, no services to run, no environment variables.
 
 ```bash
-./scripts/test.sh     # 360 tests, under a minute
+./scripts/test.sh     # 371 tests, under a minute
 ./scripts/run.sh      # http://localhost:5081
 ```
 
@@ -128,8 +128,13 @@ watched a real service go down. `Tests.E2E.MT-Uptime` does, against a machine pr
 [`e2e/install-targets.sh`](e2e/README.md) — a real HTTP fixture behind four differently-certificated
 HTTPS ports, a TCP listener, an authoritative DNS zone, and MySQL and PostgreSQL with TLS.
 
+Four tiers: `e2e/smoke.sh` proves the documented install actually works, then **114 checker tests**
+against real services, **21 pipeline scenarios** driving the whole engine from a real outage to a
+delivered webhook, and **18 browser tests** driving the installed instance through headless Chromium.
+All four have been run green on a real box.
+
 It is a **separate project, deliberately not in `MT-Uptime.Engine.slnx`**, so `./scripts/test.sh` never
-sees it and stays exactly 360 hermetic tests. Run it with `./e2e/run-tests.sh`, or by path:
+sees it and stays exactly 371 hermetic tests. Run it with `./e2e/run-tests.sh`, or by path:
 
 ```
 dotnet test engine/Tests.E2E.MT-Uptime

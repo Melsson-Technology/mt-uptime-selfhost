@@ -125,9 +125,9 @@ previous published version.
 
 ### Testing
 
-- **An end-to-end battery, in `e2e/` and `Tests.E2E.MT-Uptime/`** — in progress, and useful already.
+- **An end-to-end battery, in `e2e/` and `Tests.E2E.MT-Uptime/`** — built, and run green on a real box.
   The existing suite is hermetic by design, which is a promise worth keeping and also a limit: none of
-  its 360 tests has ever watched a real service go down. `e2e/install-targets.sh` prepares a disposable
+  its 371 tests has ever watched a real service go down. `e2e/install-targets.sh` prepares a disposable
   Ubuntu box with a real target behind every monitor type — an HTTP fixture behind nginx on plain HTTP
   and on four HTTPS ports carrying valid, near-expiry, expired and untrusted certificates; a TCP
   listener, a closed port and a blackholed one; an authoritative DNS zone with A/AAAA/CNAME/MX/TXT
@@ -135,7 +135,7 @@ previous published version.
   breaks and restores each target on demand, and blocks until the change is observable from outside, so
   a test never races the outage it just asked for.
 - The battery is a **separate project, kept out of `MT-Uptime.Engine.slnx`**, so `scripts/test.sh` still
-  runs exactly 360 hermetic tests and the "works on a fresh clone with only the SDK" promise is
+  runs exactly 371 hermetic tests and the "works on a fresh clone with only the SDK" promise is
   unchanged. Without a target manifest every end-to-end test reports skipped rather than failed, so it
   is safe to run anywhere.
 - **`e2e/smoke.sh` proves the documented install actually works**, against the service on its own port
@@ -146,7 +146,7 @@ previous published version.
 - `e2e/run-tests.sh` runs one tier at a time and refuses rather than reporting a hollow pass: a missing
   or unreadable target manifest, and a tier whose filter matches no test, are both errors — `dotnet test`
   exits zero when its filter matches nothing.
-- **The checker matrix: 113 tests putting every monitor type against a real service.** Tcp, Dns and Tls
+- **The checker matrix: 114 tests putting every monitor type against a real service.** Tcp, Dns and Tls
   had no behavioural tests at all before this, and `HttpCheckerTests` drove a stubbed message handler —
   which cannot observe the four pooled clients the monitoring engine registers, and those clients are
   where "follow redirects" and "ignore TLS errors" actually live. Among the things now pinned against
@@ -174,6 +174,13 @@ previous published version.
   `.pem` tracked under `engine/`, so the whole set is minted at runtime — into a staging directory that
   is swapped in with a rename, because the first version deleted the old certificates before writing
   the new ones and an interrupted run left the box with none at all.
+- **The battery has run, on a disposable Ubuntu 24.04 box: targets 50/50, Tier 0 36/36, Tier 1
+  114/114, Tier 2 21/21, Tier 3 18/18.** It found eighteen defects in the battery itself and three in
+  the product — one fixed (below), one open (an unknown status-page slug answers 200 rather than 404),
+  and one recorded as a documented limitation with the experiment that would confirm it: MySQL
+  `VerifyFull` will not connect to a server that presents its CA in the handshake, where `VerifyCa`
+  will, MySQL's own client at `VERIFY_IDENTITY` will, and Npgsql's `VerifyFull` will against a
+  certificate from the same CA.
 
 ### Storage
 
@@ -319,3 +326,10 @@ previous published version.
 - **HTTP probes send an identifying User-Agent.** A bare .NET request sends none, and many sites and WAFs
   answer a UA-less request with 403 — which the engine correctly read as down, while a browser saw the
   site working.
+- **A failed probe now says why, not just that it failed.** Every checker reported `ex.Message` alone,
+  and for the commonest failure an operator meets — a TLS handshake that will not complete — that
+  message is a signpost rather than an answer: .NET says *"The SSL connection could not be established,
+  see inner exception."* and MySQL says *"SSL Authentication Error"*. Neither contains the words
+  certificate, expired, chain or name. The reason was one level down, in an exception every checker was
+  discarding. Probe failures now carry the inner chain, so the alert names the actual fault — an expired
+  certificate, a name mismatch, an untrusted issuer — instead of announcing that TLS is involved.

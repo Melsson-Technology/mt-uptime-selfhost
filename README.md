@@ -116,6 +116,10 @@ To run the tests:
 ./scripts/test.sh         # or .\scripts\test.ps1
 ```
 
+Those are hermetic: throwaway SQLite files, no network, no configuration. There is also an
+**end-to-end battery** that runs the real engine against real services — HTTP, TCP, DNS, TLS, MySQL and
+PostgreSQL — on a disposable machine, plus a browser tier. See **[e2e/README.md](e2e/README.md)**.
+
 ## Deploying
 
 See **[deploy/README-deploy.md](deploy/README-deploy.md)** for a full walkthrough: systemd unit, nginx
