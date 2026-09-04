@@ -51,16 +51,20 @@ public class HardDownScenarios : IClassFixture<PipelineFixture>
             Assert.Equal("s1-http-toggle", alert.Monitor);
             Assert.Equal("Unexpected status 503", alert.Message);
 
-            // The incident, asserted separately from the alert and deliberately so.
+            // The incident is asserted against the DATABASE, below — never against the alert.
             //
-            // The plan predicted diagnostics.lastStatusCode == "503" on the webhook itself. That is
-            // RACY and must not be asserted: AlertEnricher reads the latest PERSISTED heartbeat, while
             // MonitorRunner enqueues the heartbeat and the notification onto two independent channels
-            // with no ordering between them. The enricher can therefore run before the 503 heartbeat
-            // has landed and legitimately report the previous one. The 503 is asserted below, against
-            // the heartbeat, where it is not a race.
-            Assert.NotNull(alert.IncidentId);
-
+            // with no ordering between them. The incident is created by the heartbeat writer handling
+            // EventAction.Open; the dispatcher's suppression gate looks the incident up to decide
+            // whether to suppress, and hands whatever it found to the enricher. When the notification
+            // wins that race there is no incident yet, so the payload's `incident` object is null and
+            // `diagnostics.lastStatusCode` is the PREVIOUS heartbeat's.
+            //
+            // Neither is a defect — an alert is not allowed to wait for bookkeeping — and both are
+            // observable on a real box: this test failed here on its first run against one.
+            //
+            // Where the alert DOES carry an incident, it must be the right one. That is worth
+            // asserting and is not racy, because it only fires when the field is populated.
             var status = await app.WaitForStatusAsync(monitorId, [MonitorStatus.Down], TimeSpan.FromSeconds(20));
             Assert.Equal(MonitorStatus.Down, status);
 
@@ -68,6 +72,9 @@ public class HardDownScenarios : IClassFixture<PipelineFixture>
             var incident = Assert.Single(incidents);
             Assert.Null(incident.ResolvedAt);
             Assert.Equal(MonitorStatus.Down, incident.Severity);
+
+            if (alert.IncidentId is { } alertIncidentId)
+                Assert.Equal(incident.Id, alertIncidentId);
 
             var beats = await app.HeartbeatsAsync(monitorId);
             var down = beats.Last(b => b.Status == MonitorStatus.Down);
