@@ -78,9 +78,36 @@ public sealed class RetentionService(
         }
     }
 
-    /// <summary>Run one rollup + prune + vacuum cycle now. Serialized against the daily timer.</summary>
+    /// <summary>
+    /// Run one rollup + prune + vacuum cycle now. Serialized against the daily timer.
+    /// <para>
+    /// <b>Refuses when <see cref="EngineOptions.RunRetention"/> is false, and that guard is load-bearing
+    /// rather than tidy.</b> This method used to prune regardless — the flag turned off the schedule and
+    /// left the capability reachable — and a test asserted exactly that, on the reasoning that "whatever
+    /// is allowed to see the whole database still has to be able to call this". Sound for one operator
+    /// and their own database; wrong the moment several processes share one, because <b>this code writes
+    /// raw SQL and raw SQL does not see a query filter</b>. It prunes every row in the table on whichever
+    /// window this process happens to be configured with.
+    /// </para>
+    /// <para>
+    /// The Settings page offers it as a button behind Admin authorization, so on a shared database any
+    /// administrator of any one instance could destroy every other instance's history in a click. The
+    /// flag now means what everyone already reads it as: <i>this process does not prune</i>. A deployment
+    /// that owes its data a central cleanup runs it from something that leaves the flag on.
+    /// </para>
+    /// </summary>
     public async Task<RetentionRunResult> RunCleanupAsync(CancellationToken ct = default)
     {
+        if (!_options.RunRetention)
+        {
+            log.LogWarning(
+                "Refusing to run retention: it is disabled in this process (Engine:RunRetention=false). "
+                + "This process may share its database with others, and the cleanup is not scoped to one "
+                + "of them — it must be run centrally instead.");
+
+            return new RetentionRunResult(0, 0, 0, 0);
+        }
+
         await _runLock.WaitAsync(ct);
         try
         {

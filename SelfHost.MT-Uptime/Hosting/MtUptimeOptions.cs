@@ -74,4 +74,32 @@ public sealed class MtUptimeOptions
     /// product, and the ping token is its credential.
     /// </summary>
     public bool MapPushEndpoints { get; set; } = true;
+
+    /// <summary>
+    /// Whether the instance-administration Settings page is offered.
+    /// <para>
+    /// Every one of its three sections administers <b>the instance</b> rather than what is being
+    /// monitored, and each is wrong wherever the instance is not the operator's own:
+    /// </para>
+    /// <list type="bullet">
+    ///   <item><b>Email alerts (SendGrid).</b> The sender used for password-reset mail. Where a provider
+    ///     supplies it, offering the field invites someone to replace working credentials with their own
+    ///     and lock themselves out of their only in-instance recovery path.</item>
+    ///   <item><b>Data retention</b>, including a <i>Run cleanup now</i> button. This is the sharp one.
+    ///     The cleanup writes raw SQL and raw SQL does not see a query filter, so on a shared database
+    ///     it prunes <i>every</i> instance's history on whichever window this one is set to. The
+    ///     capability is refused outright by <see cref="Monitoring.EngineOptions.RunRetention"/>; hiding
+    ///     the button as well is the second layer, not the first.</item>
+    ///   <item><b>Backup &amp; export.</b> The download is already governed by
+    ///     <see cref="MapDatabaseAdminEndpoints"/>, so with that off the button renders and 404s —
+    ///     which is worse than absent.</item>
+    /// </list>
+    /// <para>
+    /// Left <b>on</b> by default: for someone running their own instance this page is simply the
+    /// settings, and every concern above is about a database that is not solely theirs. Turning it off
+    /// does not 404 — the route stays and explains that these settings are managed for them, because a
+    /// dead link in the navigation is a support email and a 404 is a bug report.
+    /// </para>
+    /// </summary>
+    public bool ShowInstanceSettings { get; set; } = true;
 }

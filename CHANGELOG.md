@@ -5,6 +5,39 @@ versioning will follow [Semantic Versioning](https://semver.org/) from 1.0.0 onw
 
 ## [Unreleased]
 
+### Added
+
+- **A backup that includes the Data Protection key ring, and proves it.** `deploy/install-backups.sh`
+  installs a nightly systemd timer that copies the database with SQLite's online backup API (no
+  downtime), runs `integrity_check`, archives `keys/` alongside it, and optionally uploads to S3.
+
+  The check worth having: it reads the key id embedded in your stored ciphertext and refuses to call the
+  run a success unless the archived key ring contains that key. A database restored without its keys
+  starts, migrates and reports healthy while unable to decrypt a single secret, and every hand-rolled
+  backup of this application has made that mistake at least once.
+
+  `deploy/mt-uptime-engine-restore.sh --rehearse` restores into a scratch directory, verifies the same
+  pairing and compares row counts against the running instance, touching nothing. The installer will not
+  arm the timer until a rehearsal has passed.
+
+### Changed
+
+- **`Engine:RunRetention=false` now disables retention entirely, including the "Run cleanup now" button
+  on the Settings page.** It previously stopped only the daily timer, and the manual run pruned
+  regardless. If you set this flag expecting "no scheduled cleanup, but I can still trigger one", that
+  combination no longer exists — leave the flag on and the timer will run, or leave it off and run the
+  cleanup from something else that has the flag on.
+
+  The reason for the change: the cleanup writes raw SQL, so it is not scoped to any subset of the
+  database. Wherever several processes share one database, a manual run in any of them prunes all of it
+  on that process's retention window. A flag that turned off the schedule but not the capability read as
+  a safety switch and was not one.
+
+- **New option `MtUptimeOptions.ShowInstanceSettings`, default `true`.** Set it false to hide the
+  instance Settings page — email sender, data retention, backup and export — for a deployment where a
+  host administers those on the operator's behalf. The route still answers and explains rather than
+  returning 404. Defaults on, so a normal install is unchanged.
+
 First public release. Everything below describes the state at open-sourcing rather than a delta from a
 previous published version.
 

@@ -1,0 +1,15 @@
+[Unit]
+Description=Nightly MT-Uptime engine backup
+Documentation=file:///opt/mt-uptime/deploy/README-deploy.md
+
+[Timer]
+# 03:50 UTC — half an hour after the hosted database backup at 03:20, so the two never contend for
+# the same disk or the same upload bandwidth, and a bad night is unambiguous in the journal.
+OnCalendar=*-*-* 03:50:00
+RandomizedDelaySec=5min
+
+# A missed night still gets backed up. "The night we rebooted" is exactly the night you would want.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

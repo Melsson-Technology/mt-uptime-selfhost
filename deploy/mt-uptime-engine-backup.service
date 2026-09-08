@@ -1,0 +1,41 @@
+[Unit]
+Description=MT-Uptime engine backup (database + Data Protection key ring)
+Documentation=file:///opt/mt-uptime/deploy/README-deploy.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+
+# Root, because it reads a 0700 state directory owned by the service account and writes an archive
+# that contains the Data Protection key ring. Giving the mtuptime account the ability to write that
+# archive, or an S3 credential, would widen what a compromise of the web process reaches.
+User=root
+Group=root
+
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+Environment=AWS_SHARED_CREDENTIALS_FILE=/etc/mt-uptime/aws-credentials
+
+# WHERE THE ARCHIVES GO IS NOT THIS FILE'S BUSINESS. This unit ships in the public repository, so it
+# names no bucket: S3_BUCKET, S3_PREFIX and AWS_REGION come from backup.env, which the backup and
+# restore scripts also read for themselves. The leading "-" means a local-only install, with no
+# backup.env at all, still starts — the script says loudly that nothing left the machine.
+EnvironmentFile=-/etc/mt-uptime/backup.env
+
+# The AWS CLI writes ~/.aws/cli/cache/session.db, and ProtectHome=true makes /root unwritable.
+StateDirectory=mt-uptime-engine-backup
+StateDirectoryMode=0700
+Environment=HOME=/var/lib/mt-uptime-engine-backup
+
+ExecStart=/usr/local/sbin/mt-uptime-engine-backup.sh
+
+# Type=oneshot disables the start timeout, so a hung upload would leave this `activating` for ever and
+# every later firing would be silently skipped.
+TimeoutStartSec=30min
+
+NoNewPrivileges=true
+ProtectHome=true
+PrivateTmp=true
+
+# NO [Install] SECTION. The timer is the thing that gets enabled; WantedBy here would take a full
+# backup on every reboot on top of the schedule.

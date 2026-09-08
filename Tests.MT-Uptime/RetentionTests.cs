@@ -149,16 +149,56 @@ public class RetentionTests
         await on.StopAsync(CancellationToken.None);
     }
 
+    /// <summary>
+    /// Disabling retention disables it, including the manual run.
+    /// <para>
+    /// <b>This test used to assert the opposite</b>, as
+    /// <c>Disabling_the_timer_leaves_the_manual_run_working</c>, on the reasoning that "the switch turns
+    /// off the schedule, not the capability — whatever is allowed to see the whole database still has to
+    /// be able to call this, and so does the Settings page button." That is sound for one operator with
+    /// one database, and it is how this was built.
+    /// </para>
+    /// <para>
+    /// It stopped being sound when several processes began sharing one database. This cleanup writes raw
+    /// SQL, raw SQL does not see a query filter, and the Settings page offers the manual run as a button
+    /// behind Admin authorization — so an administrator of any one instance could destroy every other
+    /// instance's history in a click. Found 2026-09-08 while scoping an unrelated change to that page.
+    /// </para>
+    /// <para>
+    /// A deployment that owes its data a central cleanup runs it from a process that leaves the flag
+    /// <b>on</b>, which is what the flag now means: <i>this process does not prune</i>.
+    /// </para>
+    /// </summary>
     [Fact]
-    public async Task Disabling_the_timer_leaves_the_manual_run_working()
+    public async Task Disabling_retention_refuses_the_manual_run_as_well_as_the_timer()
     {
-        // The switch turns off the schedule, not the capability. Whatever is allowed to see the whole
-        // database still has to be able to call this — and so does the Settings page button.
         await using var tdb = await TestDatabase.CreateAsync();
         var id = await tdb.SeedMonitorAsync();
         await tdb.AddBeatsAsync(id, DateTime.UtcNow.AddDays(-10), MonitorStatus.Up, 5);
 
         var result = await tdb.NewRetention(rawDays: 7, runRetention: false).RunCleanupAsync();
+
+        Assert.Equal(0, result.RawHeartbeatsPruned);
+        Assert.Equal(0, result.BucketsRolledUp);
+        Assert.Equal(0, result.HourlyBucketsPruned);
+        Assert.Equal(0, result.IncidentsPruned);
+
+        // And nothing was actually deleted — the result being zeroes is not enough on its own, because
+        // that is also what a run which found nothing to prune returns.
+        await using var db = tdb.CreateDbContext();
+        Assert.Equal(5, await db.Heartbeats.CountAsync(h => h.MonitorId == id));
+    }
+
+    [Fact]
+    public async Task Retention_still_runs_when_it_is_enabled()
+    {
+        // The other half, so the guard above cannot be satisfied by breaking retention outright — which
+        // is the failure mode of every "refuse unless" fix.
+        await using var tdb = await TestDatabase.CreateAsync();
+        var id = await tdb.SeedMonitorAsync();
+        await tdb.AddBeatsAsync(id, DateTime.UtcNow.AddDays(-10), MonitorStatus.Up, 5);
+
+        var result = await tdb.NewRetention(rawDays: 7).RunCleanupAsync();
 
         Assert.Equal(5, result.RawHeartbeatsPruned);
     }

@@ -184,6 +184,51 @@ secret inside it. They are one unit. A database without its keys starts, migrate
 while unable to read a single stored credential — silently — so backing up only the `.db` file leaves
 you with something that looks like a backup and is not one.
 
+### Use the scripts (recommended)
+
+Since 2026-09-08 this directory ships the whole thing, so none of the manual steps below are necessary:
+
+```bash
+sudo apt-get install -y sqlite3
+
+# Local only — a verified archive with the key ring in it, on this machine.
+sudo bash /opt/mt-uptime/deploy/install-backups.sh
+
+# And off the box. Writes /etc/mt-uptime/backup.env, which the unit and the restore script both read.
+sudo env S3_BUCKET=my-bucket AWS_REGION=us-east-1 bash /opt/mt-uptime/deploy/install-backups.sh
+```
+
+Where the archives go is **not** in the unit file — it is in `/etc/mt-uptime/backup.env`
+(see `mt-uptime-backup.env.example`), because the unit ships in this repository and your bucket is
+yours. Both the nightly backup and a restore run by hand read that same file, so an emergency restore
+looks in the place the backup actually wrote to. The AWS credential goes in
+`/etc/mt-uptime/aws-credentials`, 0600 — **not** `/root/.aws`, which `ProtectHome=true` hides from the
+unit, producing a permissions error that names everything except the cause.
+
+That installs a nightly timer, takes one backup while you watch, **and refuses to arm the schedule
+until a restore rehearsal has passed.** The backup takes no downtime (SQLite's online backup API),
+runs `PRAGMA integrity_check` on the copy, and does the one check nothing else does:
+
+> **It reads the key id out of your stored ciphertext and proves the archived key ring contains that
+> key.** Every Data Protection payload begins with a magic number followed by the id of the key that
+> encrypted it, so an archive can be checked against itself. This is the automated form of the "press
+> Send test afterwards" advice below — except it runs every night, and it runs *before* you need it.
+
+Rehearse a restore whenever you like; it never touches the running instance:
+
+```bash
+sudo /usr/local/sbin/mt-uptime-engine-restore.sh --rehearse <archive>
+```
+
+It unpacks to a scratch directory, checks integrity, proves the key pairing, and prints the archive's
+row counts beside the live ones. The real restore is `--into /var/lib/mt-uptime <archive> --force`,
+which stops the service, keeps a copy of what was there, restores, fixes ownership and waits for
+`/healthz`.
+
+### By hand
+
+If you would rather not install anything, the original procedure still works:
+
 ```bash
 # A directory only root can enter. NOT /tmp: the archive contains the key ring, and on a shared host a
 # readable copy of that decrypts every stored secret and allows auth-cookie forgery.
@@ -222,7 +267,8 @@ sudo systemctl start mt-uptime
 ```
 
 **Perform a restore once, deliberately, before you need one** — ideally onto a scratch machine. Until it
-has been done, a backup is a hypothesis. The specific thing worth confirming is not that the app starts,
+has been done, a backup is a hypothesis. `mt-uptime-engine-restore.sh --rehearse` above does exactly
+this without a scratch machine and without touching the live instance, which is the reason it exists. The specific thing worth confirming is not that the app starts,
 but that a stored secret still decrypts: open a notification channel and press **Send test**. If the key
 ring came back with the database, it sends; if it did not, the app will look perfectly healthy and the
 send will fail.
