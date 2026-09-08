@@ -40,7 +40,24 @@ BACKUP_ENV=${BACKUP_ENV:-/etc/mt-uptime/backup.env}
 
 S3_BUCKET=${S3_BUCKET:-}
 S3_PREFIX=${S3_PREFIX:-engine}
-HEALTH_URL=${HEALTH_URL:-http://127.0.0.1:5000/healthz}
+ENV_FILE=${ENV_FILE:-/etc/mt-uptime/mt-uptime.env}
+
+# THE HEALTH CHECK MUST NOT GUESS A PORT, and this used to.
+#
+# It defaulted to 127.0.0.1:5000 because that is the port the install guide uses. On the machine this
+# was written for, 5000 belongs to an entirely different application, and MT-Uptime is on 5081 because
+# its EnvironmentFile says so - which the unit file does not, since the file overrides it. A restore
+# that curls 5000 therefore health-checks a stranger: if that stranger answers 200, the restore reports
+# success over a dead instance, which is the one lie a restore script must never tell.
+#
+# So it is read from the same file the service reads, and if it cannot be determined the check is
+# SKIPPED with a loud note rather than pointed at a guess. "I could not verify this" is a true
+# statement; "200 OK" from somebody else's application is not.
+if [ -z "${HEALTH_URL:-}" ] && [ -r "$ENV_FILE" ]; then
+  _urls=$(sed -n 's/^[[:space:]]*ASPNETCORE_URLS=//p' "$ENV_FILE" | tail -1 | tr -d '"' | cut -d';' -f1)
+  [ -n "${_urls:-}" ] && HEALTH_URL="${_urls%/}/healthz"
+fi
+HEALTH_URL=${HEALTH_URL:-}
 
 : "${AWS_SHARED_CREDENTIALS_FILE:=/etc/mt-uptime/aws-credentials}"
 export AWS_SHARED_CREDENTIALS_FILE
@@ -244,12 +261,18 @@ fi
 log "starting $SERVICE"
 systemctl start "$SERVICE" || die "the service did not start"
 
-for i in 1 2 3 4 5 6 7 8 9 10; do
-  code=$(curl -s -o /dev/null -w '%{http_code}' "$HEALTH_URL" 2>/dev/null || echo 000)
-  [ "$code" = "200" ] && { log "$HEALTH_URL answered 200"; break; }
-  sleep 2
-done
-[ "${code:-000}" = "200" ] || log "!! $HEALTH_URL answered ${code:-000} - check journalctl -u $SERVICE"
+if [ -z "$HEALTH_URL" ]; then
+  log "!! no ASPNETCORE_URLS in $ENV_FILE, so there is no address to check."
+  log "!! The restore itself completed. Verify the instance answers by hand, and see the note above"
+  log "!! about why this refuses to guess a port rather than checking one that may not be ours."
+else
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    code=$(curl -s -o /dev/null -w '%{http_code}' "$HEALTH_URL" 2>/dev/null || echo 000)
+    [ "$code" = "200" ] && { log "$HEALTH_URL answered 200"; break; }
+    sleep 2
+  done
+  [ "${code:-000}" = "200" ] || log "!! $HEALTH_URL answered ${code:-000} - check journalctl -u $SERVICE"
+fi
 
 log ""
 log "restore complete. The key ring came back with the database, so stored secrets decrypt - but"
