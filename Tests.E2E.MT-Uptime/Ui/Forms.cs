@@ -151,4 +151,97 @@ public static class Forms
             + $"{attempts} attempts. The Blazor circuit is probably not connecting at all — check "
             + "that nginx is forwarding WebSocket upgrades.");
     }
+
+    /// <summary>
+    /// Clicks a control whose handler runs server-side, and confirms the navigation it should cause,
+    /// retrying the click if nothing happens.
+    /// <para>
+    /// The same race as <see cref="SelectAndConfirmAsync"/>, in its other guise. A Blazor button is
+    /// present in the static SSR markup, so Playwright finds it and clicks it happily — but until the
+    /// circuit is connected that click reaches no component: no handler runs, no confirmation dialog
+    /// appears, and nothing navigates. The symptom is a thirty-second wait for a navigation that was
+    /// never going to happen.
+    /// </para>
+    /// <para>
+    /// Found on the SECOND run of a box, in <c>DeleteMonitorAsync</c>. The first run won this race at
+    /// every one of these call sites, which is the argument for running the battery twice: Tier 3
+    /// drives the installed instance, whose database survives the run, so run two renders more rows
+    /// and more history and connects its circuit later.
+    /// </para>
+    /// <para>
+    /// Retrying is honest here for the reason it is in <see cref="SelectAndConfirmAsync"/>: the
+    /// failure being retried is "the application was not listening yet", which a second click
+    /// genuinely fixes. It is not a tolerance for a slow box — a connected circuit acts on the first
+    /// click every time.
+    /// </para>
+    /// </summary>
+    public static async Task ClickAndConfirmUrlAsync(
+        IPage page,
+        ILocator target,
+        Func<string, bool> settled,
+        string what,
+        int attempts = 3,
+        int perAttemptMs = 8_000)
+    {
+        for (var attempt = 1; attempt <= attempts; attempt++)
+        {
+            // From the second attempt on: if the effect landed just after its own timeout expired,
+            // stop rather than clicking a control that is no longer on the page. Deliberately NOT
+            // checked before the first click, where a predicate that is already true would mean
+            // returning having never clicked at all — and reporting that as success.
+            if (attempt > 1 && settled(page.Url)) return;
+
+            await target.ClickAsync();
+
+            try
+            {
+                await page.WaitForURLAsync(settled, new PageWaitForURLOptions { Timeout = perAttemptMs });
+                return;
+            }
+            catch (Exception) when (attempt < attempts)
+            {
+                // Not listening yet. Give the circuit a moment and click again.
+                await page.WaitForTimeoutAsync(1_000);
+            }
+        }
+
+        // Two causes, and the message must not pick one: an unconnected circuit looks exactly like a
+        // page that stayed put on purpose.
+        throw new TimeoutException(
+            $"Clicking '{what}' never navigated away from {page.Url}, after {attempts} attempts. "
+            + "Either the Blazor circuit is not connecting at all — check that nginx is forwarding "
+            + "WebSocket upgrades — or the page stayed where it is deliberately, which for a form "
+            + "means a validation error it is now displaying.");
+    }
+
+    /// <summary>
+    /// Follows an in-app link to an <c>@rendermode InteractiveServer</c> page and waits for its
+    /// circuit, by reading the link's href and navigating rather than by clicking it.
+    /// <para>
+    /// <see cref="GotoInteractiveAsync"/> can only arm its wait around a <c>GotoAsync</c>. A link
+    /// CLICK lands on the destination with nothing armed, so anything typed on arrival races the
+    /// circuit — which is how U11 could fill in an interval, save, and then find the old value still
+    /// there, with the failure pointing at the editor rather than at the race.
+    /// </para>
+    /// <para>
+    /// This one is deterministic rather than retried, because it can be: a full navigation always
+    /// starts a fresh circuit, which is the property the other call sites here already rely on. The
+    /// cost is that these sites no longer exercise Blazor's enhanced navigation. That is a real
+    /// reduction in coverage, and it belongs in a test about enhanced navigation rather than living
+    /// on as a race underneath tests about something else.
+    /// </para>
+    /// </summary>
+    public static async Task FollowToInteractiveAsync(IPage page, ILocator link)
+    {
+        var href = await link.First.GetAttributeAsync("href");
+
+        if (string.IsNullOrWhiteSpace(href))
+        {
+            throw new InvalidOperationException(
+                "the link has no href to follow, so there is no navigation to arm a circuit wait "
+                + "around. If this is a button rather than a link, use ClickAndConfirmUrlAsync.");
+        }
+
+        await GotoInteractiveAsync(page, href);
+    }
 }

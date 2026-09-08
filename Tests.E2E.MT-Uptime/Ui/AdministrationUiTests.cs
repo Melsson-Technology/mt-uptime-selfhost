@@ -316,8 +316,15 @@ public class AdministrationUiTests : IClassFixture<UiFixture>
         // target="_blank": clicking it opens a NEW TAB and leaves this page sitting on the list,
         // where there is no Delete button — so the test waited thirty seconds for a button that was
         // never going to appear, on a page it had never left.
-        await row.First.GetByRole(AriaRole.Link, new() { Name = "Edit", Exact = true }).ClickAsync();
-        await page.GetByRole(AriaRole.Button, new() { Name = "Delete", Exact = true }).ClickAsync();
-        await page.WaitForURLAsync(u => !u.Contains("/edit", StringComparison.Ordinal));
+        // Followed rather than clicked, so the editor's circuit is up before Delete is pressed.
+        await Forms.FollowToInteractiveAsync(
+            page,
+            row.First.GetByRole(AriaRole.Link, new() { Name = "Edit", Exact = true }));
+
+        await Forms.ClickAndConfirmUrlAsync(
+            page,
+            page.GetByRole(AriaRole.Button, new() { Name = "Delete", Exact = true }),
+            u => !u.Contains("/edit", StringComparison.Ordinal),
+            "Delete");
     }
 }

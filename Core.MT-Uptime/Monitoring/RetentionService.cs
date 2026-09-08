@@ -11,7 +11,7 @@ using MT.Uptime.Core.Settings;
 namespace MT.Uptime.Core.Monitoring;
 
 /// <summary>
-/// Keeps the SQLite file from growing without bound on a micro instance. Once a day (and shortly
+/// Keeps the database from growing without bound on a micro instance. Once a day (and shortly
 /// after startup) it:
 /// <list type="number">
 ///   <item>rolls completed raw heartbeats up into hourly + daily <see cref="StatRollup"/> buckets
@@ -20,11 +20,18 @@ namespace MT.Uptime.Core.Monitoring;
 ///         (short write locks, never one giant DELETE), and prunes stale hourly rollups,</item>
 ///   <item>prunes resolved <see cref="Domain.Incident"/>s past their own, much longer window, along
 ///         with any incident left with no members by a deleted monitor, then</item>
-///   <item><c>wal_checkpoint(TRUNCATE)</c> + <c>incremental_vacuum</c> to actually return freed pages
-///         to the OS (a full <c>VACUUM</c> is deliberately avoided — it rewrites the whole file).</item>
+///   <item>on SQLite only, <c>wal_checkpoint(TRUNCATE)</c> + <c>incremental_vacuum</c> to actually
+///         return freed pages to the OS (a full <c>VACUUM</c> is deliberately avoided — it rewrites
+///         the whole file). Other engines reclaim their own space; see <see cref="RetentionDialect"/>.</item>
 /// </list>
 /// Rollup runs <em>before</em> prune so no completed bucket is lost. The manual
 /// <see cref="RunCleanupAsync"/> entry point (used by the Settings page) shares a lock with the timer.
+/// <para>
+/// <b>This is the only part of the engine that writes SQL by hand, so it is the only part that can be
+/// wrong on one database and right on another.</b> Everything that differs between engines lives in
+/// <see cref="RetentionDialect"/> rather than inline here — four details, all of which were written for
+/// SQLite alone and all of which failed the first time this ran on MySQL.
+/// </para>
 /// </summary>
 public sealed class RetentionService(
     IDbContextFactory<AppDbContext> factory,
@@ -47,6 +54,16 @@ public sealed class RetentionService(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (!_options.RunRetention)
+        {
+            // Said out loud, once, at Information. A database that is quietly never pruned looks exactly
+            // like one that is being pruned correctly, right up until the disk fills.
+            log.LogInformation(
+                "Retention is disabled in this process (Engine:RunRetention=false); it must be run "
+                + "centrally instead, or nothing will prune this database");
+            return;
+        }
+
         try { await Task.Delay(StartupDelay, stoppingToken); }
         catch (OperationCanceledException) { return; }
 
@@ -67,10 +84,16 @@ public sealed class RetentionService(
         await _runLock.WaitAsync(ct);
         try
         {
-            var rolled = await RollUpAsync(ct);
-            var (rawDeleted, hourlyDeleted) = await PruneAsync(ct);
+            // Resolved once per run, from a context, because the provider cannot change under a running
+            // process. Reading it costs no connection — EF knows the provider from the options.
+            RetentionDialect dialect;
+            await using (var probe = await factory.CreateDbContextAsync(ct))
+                dialect = RetentionDialect.For(probe.Database.ProviderName);
+
+            var rolled = await RollUpAsync(dialect, ct);
+            var (rawDeleted, hourlyDeleted) = await PruneAsync(dialect, ct);
             var incidentsDeleted = await PruneIncidentsAsync(ct);
-            if (rawDeleted > 0 || hourlyDeleted > 0 || incidentsDeleted > 0)
+            if (dialect.CanReclaimFreePages && (rawDeleted > 0 || hourlyDeleted > 0 || incidentsDeleted > 0))
                 await CheckpointAndVacuumAsync(ct);
 
             LastRunUtc = DateTime.UtcNow;
@@ -85,7 +108,7 @@ public sealed class RetentionService(
 
     // --- Rollup -------------------------------------------------------------------------------
 
-    private async Task<int> RollUpAsync(CancellationToken ct)
+    private async Task<int> RollUpAsync(RetentionDialect dialect, CancellationToken ct)
     {
         var now = DateTime.UtcNow;
         var hourFloor = new DateTime(now.Year, now.Month, now.Day, now.Hour, 0, 0, DateTimeKind.Utc);
@@ -93,17 +116,16 @@ public sealed class RetentionService(
 
         await using var db = await factory.CreateDbContextAsync(ct);
         var total = 0;
-        // Bucket key by string-slicing the fixed-width stored timestamp ("yyyy-MM-dd HH:mm:ss[.fff]"),
-        // which is robust regardless of whether fractional seconds are present.
-        total += await RollUpPeriodAsync(db, RollupPeriod.Hourly,
-            "substr(Timestamp, 1, 13) || ':00:00'", TimeSpan.FromHours(1), hourFloor, ct);
-        total += await RollUpPeriodAsync(db, RollupPeriod.Daily,
-            "substr(Timestamp, 1, 10) || ' 00:00:00'", TimeSpan.FromDays(1), dayFloor, ct);
+        // The bucket key is a truncated timestamp, and how you truncate one is the first thing that is
+        // not portable — see RetentionDialect. Both forms yield exactly "yyyy-MM-dd HH:mm:ss".
+        total += await RollUpPeriodAsync(db, dialect, RollupPeriod.Hourly, TimeSpan.FromHours(1), hourFloor, ct);
+        total += await RollUpPeriodAsync(db, dialect, RollupPeriod.Daily, TimeSpan.FromDays(1), dayFloor, ct);
         return total;
     }
 
     private async Task<int> RollUpPeriodAsync(
-        AppDbContext db, RollupPeriod period, string bucketExpr, TimeSpan size, DateTime boundary, CancellationToken ct)
+        AppDbContext db, RetentionDialect dialect, RollupPeriod period, TimeSpan size, DateTime boundary,
+        CancellationToken ct)
     {
         // Watermark = newest bucket already rolled up for this period; resume just after it.
         var watermark = await db.StatRollups
@@ -118,27 +140,9 @@ public sealed class RetentionService(
         var rows = new List<AggRow>();
         await using (var cmd = conn.CreateCommand())
         {
-            // Maintenance beats are counted only into MaintC and are kept out of the four status buckets
-            // and the response-time aggregates. That is what makes StatRollup.Total the uptime
-            // denominator directly, with no later subtraction — see StatRollup.MaintenanceCount for why
-            // subtracting afterwards would double-count.
-            cmd.CommandText = $"""
-                SELECT MonitorId,
-                       {bucketExpr} AS Bucket,
-                       SUM(CASE WHEN Maintenance = 0 AND Status = 1 THEN 1 ELSE 0 END) AS UpC,
-                       SUM(CASE WHEN Maintenance = 0 AND Status = 0 THEN 1 ELSE 0 END) AS DownC,
-                       SUM(CASE WHEN Maintenance = 0 AND Status = 2 THEN 1 ELSE 0 END) AS PendC,
-                       SUM(CASE WHEN Maintenance = 0 AND Status = 3 THEN 1 ELSE 0 END) AS DegC,
-                       SUM(CASE WHEN Maintenance = 1 THEN 1 ELSE 0 END) AS MaintC,
-                       AVG(CASE WHEN Maintenance = 0 THEN ResponseTimeMs END) AS AvgMs,
-                       MIN(CASE WHEN Maintenance = 0 THEN ResponseTimeMs END) AS MinMs,
-                       MAX(CASE WHEN Maintenance = 0 THEN ResponseTimeMs END) AS MaxMs
-                FROM Heartbeats
-                WHERE Timestamp < $boundary{(from.HasValue ? " AND Timestamp >= $from" : "")}
-                GROUP BY MonitorId, {bucketExpr};
-                """;
-            AddParam(cmd, "$boundary", boundary);
-            if (from.HasValue) AddParam(cmd, "$from", from.Value);
+            cmd.CommandText = BuildRollupSql(dialect, period, from.HasValue);
+            AddParam(cmd, ParameterPrefix + "boundary", boundary);
+            if (from.HasValue) AddParam(cmd, ParameterPrefix + "from", from.Value);
 
             await using var reader = await cmd.ExecuteReaderAsync(ct);
             while (await reader.ReadAsync(ct))
@@ -146,13 +150,16 @@ public sealed class RetentionService(
                 var bucket = DateTime.SpecifyKind(
                     DateTime.ParseExact(reader.GetString(1), "yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture),
                     DateTimeKind.Utc);
+                // Read the aggregates through Convert rather than GetInt32/GetDouble. SQLite is
+                // dynamically typed and hands back whatever fits; MySQL returns SUM(...) as DECIMAL,
+                // and a strict GetInt32 on a decimal is an InvalidCastException. The columns are
+                // aggregates of a CASE expression either way, so the CLR type is the driver's choice
+                // and not something the schema pins down.
                 rows.Add(new AggRow(
                     reader.GetInt32(0), bucket,
-                    reader.GetInt32(2), reader.GetInt32(3), reader.GetInt32(4), reader.GetInt32(5),
-                    reader.GetInt32(6),
-                    reader.IsDBNull(7) ? null : reader.GetDouble(7),
-                    reader.IsDBNull(8) ? null : reader.GetDouble(8),
-                    reader.IsDBNull(9) ? null : reader.GetDouble(9)));
+                    Count(reader, 2), Count(reader, 3), Count(reader, 4), Count(reader, 5),
+                    Count(reader, 6),
+                    Millis(reader, 7), Millis(reader, 8), Millis(reader, 9)));
             }
         }
 
@@ -181,22 +188,24 @@ public sealed class RetentionService(
 
     // --- Prune --------------------------------------------------------------------------------
 
-    private async Task<(long raw, long hourly)> PruneAsync(CancellationToken ct)
+    private async Task<(long raw, long hourly)> PruneAsync(RetentionDialect dialect, CancellationToken ct)
     {
         var retention = await settings.GetRetentionAsync(ct);
         var rawCutoff = DateTime.UtcNow.AddDays(-Math.Max(1, retention.RawDays));
 
-        // Delete raw heartbeats in bounded batches so each write lock is short. The subquery+LIMIT form
-        // works without SQLite's optional DELETE...LIMIT compile-time flag.
+        // Delete raw heartbeats in bounded batches so each write lock is short. How the batch is bounded
+        // is the second thing that is not portable: SQLite goes through a subquery because DELETE...LIMIT
+        // is an optional compile-time flag there, and MySQL rejects LIMIT inside an IN subquery outright.
+        // See RetentionDialect.
+        var deleteSql = dialect.BatchDeleteSql(DeleteBatchSize);
+
         long rawDeleted = 0;
         while (true)
         {
             int n;
             await using (var db = await factory.CreateDbContextAsync(ct))
             {
-                n = await db.Database.ExecuteSqlAsync(
-                    $"DELETE FROM Heartbeats WHERE Id IN (SELECT Id FROM Heartbeats WHERE Timestamp < {rawCutoff} LIMIT {DeleteBatchSize})",
-                    ct);
+                n = await db.Database.ExecuteSqlRawAsync(deleteSql, new object[] { rawCutoff }, ct);
             }
             rawDeleted += n;
             if (n < DeleteBatchSize) break;
@@ -254,6 +263,10 @@ public sealed class RetentionService(
 
     // --- Reclaim disk -------------------------------------------------------------------------
 
+    /// <summary>
+    /// SQLite only — the caller checks <see cref="RetentionDialect.CanReclaimFreePages"/> first. On any
+    /// other engine this is both invalid syntax and unnecessary work.
+    /// </summary>
     private async Task CheckpointAndVacuumAsync(CancellationToken ct)
     {
         await using var db = await factory.CreateDbContextAsync(ct);
@@ -265,6 +278,57 @@ public sealed class RetentionService(
         cmd.CommandText = "PRAGMA wal_checkpoint(TRUNCATE); PRAGMA incremental_vacuum;";
         await cmd.ExecuteNonQueryAsync(ct);
     }
+
+    /// <summary>
+    /// <c>@</c>, and not SQLite's <c>$</c>. Microsoft.Data.Sqlite accepts <c>@</c>, <c>$</c> and <c>:</c>
+    /// alike; MySQL accepts only <c>@</c>. So this prefix is the one that works everywhere — and the
+    /// <c>$</c> it replaced is what produced <i>"Unknown column '$boundary' in 'where clause'"</i> the
+    /// first time a retention cycle ran against MySQL.
+    /// </summary>
+    private const string ParameterPrefix = "@";
+
+    /// <summary>
+    /// The rollup query for one period.
+    /// <para>
+    /// Built by a named method rather than inline so it can be asserted against without a database:
+    /// the ways this can be wrong are provider-specific and silent, and the SQLite suite cannot see
+    /// them. <c>internal</c> for that reason alone — see the test assembly named in the csproj.
+    /// </para>
+    /// <para>
+    /// Maintenance beats are counted only into <c>MaintC</c> and are kept out of the four status buckets
+    /// and the response-time aggregates. That is what makes <c>StatRollup.Total</c> the uptime
+    /// denominator directly, with no later subtraction — see <c>StatRollup.MaintenanceCount</c> for why
+    /// subtracting afterwards would double-count.
+    /// </para>
+    /// </summary>
+    internal static string BuildRollupSql(RetentionDialect dialect, RollupPeriod period, bool hasFrom)
+    {
+        var bucketExpr = dialect.BucketFor(period);
+
+        return $"""
+            SELECT MonitorId,
+                   {bucketExpr} AS Bucket,
+                   SUM(CASE WHEN Maintenance = 0 AND Status = 1 THEN 1 ELSE 0 END) AS UpC,
+                   SUM(CASE WHEN Maintenance = 0 AND Status = 0 THEN 1 ELSE 0 END) AS DownC,
+                   SUM(CASE WHEN Maintenance = 0 AND Status = 2 THEN 1 ELSE 0 END) AS PendC,
+                   SUM(CASE WHEN Maintenance = 0 AND Status = 3 THEN 1 ELSE 0 END) AS DegC,
+                   SUM(CASE WHEN Maintenance = 1 THEN 1 ELSE 0 END) AS MaintC,
+                   AVG(CASE WHEN Maintenance = 0 THEN ResponseTimeMs END) AS AvgMs,
+                   MIN(CASE WHEN Maintenance = 0 THEN ResponseTimeMs END) AS MinMs,
+                   MAX(CASE WHEN Maintenance = 0 THEN ResponseTimeMs END) AS MaxMs
+            FROM Heartbeats
+            WHERE Timestamp < {ParameterPrefix}boundary{(hasFrom ? $" AND Timestamp >= {ParameterPrefix}from" : "")}
+            GROUP BY MonitorId, {bucketExpr};
+            """;
+    }
+
+    /// <summary>A <c>SUM(CASE ...)</c> column, whatever numeric type the driver chose to return it as.</summary>
+    private static int Count(DbDataReader reader, int ordinal) =>
+        reader.IsDBNull(ordinal) ? 0 : Convert.ToInt32(reader.GetValue(ordinal), CultureInfo.InvariantCulture);
+
+    /// <summary>An AVG/MIN/MAX over the nullable response time. Null when every beat in the bucket was null.</summary>
+    private static double? Millis(DbDataReader reader, int ordinal) =>
+        reader.IsDBNull(ordinal) ? null : Convert.ToDouble(reader.GetValue(ordinal), CultureInfo.InvariantCulture);
 
     private static void AddParam(DbCommand cmd, string name, object value)
     {

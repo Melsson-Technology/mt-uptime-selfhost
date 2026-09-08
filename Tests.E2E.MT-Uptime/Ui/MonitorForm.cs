@@ -152,6 +152,13 @@ public static class MonitorForm
         // change is what distinguishes "saved" from "the form re-rendered with a validation error" —
         // and the latter would otherwise surface much later, as a monitor that mysteriously does not
         // exist.
+        //
+        // DELIBERATELY NOT Forms.ClickAndConfirmUrlAsync, unlike every Delete button. Save is the one
+        // click here that is not safe to repeat: a second one on a create form that was merely slow
+        // makes a DUPLICATE monitor, and a duplicate name turns the caller's next locator into a
+        // strict-mode violation — a worse failure than the one being avoided. It does not need the
+        // retry either, because every path to this form arms the circuit first: CreateAsync through
+        // GotoInteractiveAsync, and U11's editor through FollowToInteractiveAsync.
         await page.WaitForURLAsync(u => !u.Contains("/monitors/new", StringComparison.Ordinal)
                                      && !u.Contains("/edit", StringComparison.Ordinal));
     }

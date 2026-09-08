@@ -101,11 +101,15 @@ public class MonitorsUiTests : IClassFixture<UiFixture>
 
         // Edit: change the interval and confirm it survives a round trip through the database rather
         // than merely sticking in the component's model.
-        await page.Locator("tr", new() { HasText = name }).GetByRole(AriaRole.Link, new() { Name = "Edit" }).ClickAsync();
+        await Forms.FollowToInteractiveAsync(
+            page,
+            page.Locator("tr", new() { HasText = name }).GetByRole(AriaRole.Link, new() { Name = "Edit" }));
         await page.GetByLabel("Interval (s)", new() { Exact = true }).FillAsync("30");
         await MonitorForm.SaveAsync(page);
 
-        await page.Locator("tr", new() { HasText = name }).GetByRole(AriaRole.Link, new() { Name = "Edit" }).ClickAsync();
+        await Forms.FollowToInteractiveAsync(
+            page,
+            page.Locator("tr", new() { HasText = name }).GetByRole(AriaRole.Link, new() { Name = "Edit" }));
         await Assertions.Expect(page.GetByLabel("Interval (s)", new() { Exact = true })).ToHaveValueAsync("30");
 
         await Forms.GotoInteractiveAsync(page, "/");
@@ -134,8 +138,14 @@ public class MonitorsUiTests : IClassFixture<UiFixture>
         var row = page.Locator("tr", new() { HasText = name });
         if (await row.CountAsync() == 0) return;
 
-        await row.GetByRole(AriaRole.Link, new() { Name = "Edit" }).First.ClickAsync();
-        await page.GetByRole(AriaRole.Button, new() { Name = "Delete", Exact = true }).ClickAsync();
-        await page.WaitForURLAsync(u => !u.Contains("/edit", StringComparison.Ordinal));
+        // Followed rather than clicked, so the editor's circuit is up before Delete is pressed. The
+        // retry below is then a net rather than the mechanism — see Forms for why both are here.
+        await Forms.FollowToInteractiveAsync(page, row.GetByRole(AriaRole.Link, new() { Name = "Edit" }));
+
+        await Forms.ClickAndConfirmUrlAsync(
+            page,
+            page.GetByRole(AriaRole.Button, new() { Name = "Delete", Exact = true }),
+            u => !u.Contains("/edit", StringComparison.Ordinal),
+            "Delete");
     }
 }

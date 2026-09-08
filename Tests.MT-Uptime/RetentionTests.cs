@@ -119,4 +119,47 @@ public class RetentionTests
         Assert.NotNull(uptime);
         Assert.Equal(50.0, uptime!.Value, 3); // 10 up (rollup) / 20 total (10 rollup up + 10 raw down)
     }
+
+    // --- the per-process switch ------------------------------------------------------------------
+
+    [Fact]
+    public async Task The_daily_timer_does_not_start_when_retention_is_disabled_for_this_process()
+    {
+        // Retention writes raw SQL, and raw SQL sees the whole table. A deployment where several
+        // processes share one database therefore has to run it centrally or not at all, which is what
+        // this switch is for — see EngineOptions.RunRetention.
+        await using var tdb = await TestDatabase.CreateAsync();
+
+        // Await completion rather than inspecting it. On .NET 10 `BackgroundService.ExecuteTask` reads
+        // `WaitingForActivation` immediately after `StartAsync` even for a service whose `ExecuteAsync`
+        // returns `Task.CompletedTask`, so `IsCompleted` there is not a signal — it is false either way.
+        var off = tdb.NewRetention(rawDays: 7, runRetention: false);
+        await off.StartAsync(CancellationToken.None);
+
+        var finished = await Task.WhenAny(off.ExecuteTask!, Task.Delay(TimeSpan.FromSeconds(10)));
+        Assert.Same(off.ExecuteTask, finished);   // returned, instead of waiting out the startup delay
+        await off.StopAsync(CancellationToken.None);
+
+        // Enabled, the same service sits in a thirty-second startup delay, so a moment later it is
+        // still running. That is the contrast the switch is supposed to make.
+        var on = tdb.NewRetention(rawDays: 7);
+        await on.StartAsync(CancellationToken.None);
+        await Task.Delay(250);
+        Assert.False(on.ExecuteTask!.IsCompleted);
+        await on.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Disabling_the_timer_leaves_the_manual_run_working()
+    {
+        // The switch turns off the schedule, not the capability. Whatever is allowed to see the whole
+        // database still has to be able to call this — and so does the Settings page button.
+        await using var tdb = await TestDatabase.CreateAsync();
+        var id = await tdb.SeedMonitorAsync();
+        await tdb.AddBeatsAsync(id, DateTime.UtcNow.AddDays(-10), MonitorStatus.Up, 5);
+
+        var result = await tdb.NewRetention(rawDays: 7, runRetention: false).RunCleanupAsync();
+
+        Assert.Equal(5, result.RawHeartbeatsPruned);
+    }
 }

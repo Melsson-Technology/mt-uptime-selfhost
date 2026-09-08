@@ -17,8 +17,9 @@ PostgreSQL with TLS from a locally-minted CA — and gives the tests a root-owne
 and restore each one on demand.
 
 > **Status: complete, and proven on a real box.** All four tiers have run against actual target
-> services — 50/50 targets, 36/36 Tier 0, 21/21 Tier 2, 18/18 Tier 3, and Tier 1 green but for one
-> documented product limitation (MySQL `VerifyFull`, see `MySqlCheckerE2E`).
+> services — 50/50 targets, 36/36 Tier 0, 114/114 Tier 1, 21/21 Tier 2 and 18/18 Tier 3. Two of the
+> Tier 1 tests assert a documented product limitation rather than expecting it to work (MySQL
+> `VerifyFull`, see `MySqlCheckerE2E`), so their passing is the intended outcome.
 >
 > Getting there took eighteen fixes to the battery itself, and it is worth saying what kind: systemd
 > cutting a command at a semicolon, a umask leaking into a directory two hundred lines from where it
@@ -37,22 +38,112 @@ Debian-family specifics.
 
 ## Running it
 
+**There are two ways to run this, and which one you want depends on why.**
+
+If you downloaded the repository and want to watch the monitors work against real services, take the
+scripted path below: five commands, and nothing to decide.
+
+If you are **validating a release**, do step 3 by hand instead, following
+`deploy/README-deploy.md`'s "short version" literally. That is the test — the README is the product's
+install instructions, and every command in it that misbehaves is a finding. `install-mt-uptime.sh`
+replays those same commands in the same order with no fixes applied, so it reproduces such defects
+rather than revealing them.
+
+### 0. A machine you are going to destroy
+
+Ubuntu 24.04, `t3.medium`, 30 GB. See **What you need** above, and mean it about disposable.
+
+On a box that will live more than a few hours, stop unattended upgrades restarting MySQL or
+PostgreSQL in the middle of a run. Nothing in the battery does this for you:
+
 ```bash
-# 1. Targets. Idempotent — the acceptance bar is that its self-check passes twice in a row.
+sudo systemctl disable --now apt-daily.timer apt-daily-upgrade.timer
+```
+
+### 1. Clone
+
+```bash
+sudo apt-get update && sudo apt-get install -y git
+git clone https://github.com/Melsson-Technology/mt-uptime-selfhost.git
+cd mt-uptime-selfhost
+```
+
+### 2. The targets
+
+```bash
 sudo ./e2e/install-targets.sh --with-ui
+```
 
-# 2. Install MT-Uptime by hand, following deploy/README-deploy.md's "short version".
-#    By hand is deliberate: every README command that misbehaves is a finding.
-#    Skip certbot, and leave App__PublicBaseUrl unset.
+Three to six minutes, ending in a PASS/FAIL table. **Expect `50 / 50`.** Run it a second time if you
+want the bar the maintainers hold it to: the table passing twice in a row is what separates a script
+that converges from one that merely finished.
 
-# 3. Tier 0 — completes first-run setup and smoke-tests the install.
+Use `sudo` from your own account rather than from a root shell. `E2E_TEST_USER` defaults to
+`$SUDO_USER`, and that account is the one the manifest and the sudoers rule are written for.
+
+### 3. MT-Uptime itself
+
+```bash
+sudo ./e2e/install-mt-uptime.sh $(hostname -f)
+export PATH=$HOME/.dotnet:$PATH
+```
+
+Installs the .NET SDK if you have none, builds a Release package here, provisions the host and
+deploys it. Certbot is deliberately skipped — the battery is plain HTTP on `:80` — and
+`App__PublicBaseUrl` deliberately left unset.
+
+**The `export` is not decoration.** The SDK is installed into *your* home directory rather than
+root's, specifically so the account running the tests can reach it, which means your own shell has to
+be told where it went. Every step after this one needs `dotnet` on `PATH`.
+
+### 4. Tier 0 — smoke
+
+```bash
 ./e2e/smoke.sh
+```
 
-# 4. The tiers.
+**Expect `36 / 36` and one warn.** This is the one step with no second chance: it completes the
+first-run wizard, and the setup token is destroyed the moment an administrator exists. So this is the
+only opportunity to capture those credentials, and it writes them into the manifest — without them
+the UI tier skips itself entirely. **Do not complete the wizard in a browser first.**
+
+### 5. The three test tiers
+
+```bash
 ./e2e/run-tests.sh --tier checker
 ./e2e/run-tests.sh --tier pipeline
 ./e2e/run-tests.sh --tier ui
 ```
+
+**Expect `114`, `21` and `18` passing.** Two of the checker tests assert the MySQL `VerifyFull`
+limitation rather than expecting it to work, so those passing is the correct outcome, not a mystery.
+
+**Keep them in that order.** `smoke.sh` deliberately exhausts the sign-in limiter — 20 attempts per
+five minutes, keyed on the connection address, which behind nginx is `127.0.0.1` for everything on
+this box — so the UI tier cannot sign in for up to five minutes afterwards. The checker and pipeline
+tiers need no login and absorb that wait for free, and `smoke.sh` prints when the limiter is clear.
+`--tier all` exists, but xUnit chooses the order inside it, so the cooldown can land *on* the UI
+tests rather than ahead of them.
+
+### 6. Destroy the machine
+
+Terminate it. Not stop, and do not take an image: it holds the target databases' passwords, a private
+CA in its system trust store, a `NOPASSWD` sudoers rule and an nftables rule.
+
+### When a script refuses
+
+Every refusal here is deliberate, and each one prints its own fix. These are the ones worth
+recognising on sight:
+
+| What you see | What it means |
+|---|---|
+| `REFUSING: … apt-get is not present` | Not a Debian-family host. The package names, the AppArmor profile path and the PostgreSQL cluster layout are all Debian specifics |
+| `REFUSING: no target manifest at …` | Step 2 has not run. Running the tests without it would report success having tested nothing |
+| `REFUSING: … exists but this user cannot read it` | The manifest is `0640 root:<test user>`. Re-run step 2 with `sudo` from the account you intend to test as, or set `E2E_TEST_USER` |
+| `REFUSING: dotnet is not on PATH` | The `export` from step 3, in this shell |
+| `REFUSING: the manifest has no MTU_BASE_URL/MTU_ADMIN_PASSWORD` | Step 4 has not run, so every UI test would skip |
+| `REFUSING: nothing to run — no test matched the tier` | A mistyped `--filter`, or a renamed namespace. `dotnet test` exits **zero** when its filter matches nothing, so an empty tier is otherwise indistinguishable from a green one |
+| Every test `SKIPPED`, none failed | No readable manifest. That is by design, so the suite is harmless on a laptop — see **The manifest** below |
 
 `install-targets.sh` can run before or after the application is installed. It writes its nginx
 configuration to `/etc/nginx/conf.d/` rather than `sites-enabled/` specifically so that the ordering
@@ -64,7 +155,6 @@ Useful flags: `--only <step>` runs one step (`certs`, `fixture`, `nginx`, `tcp`,
 `mysql`, `postgres`, `helper`, `ui`, `manifest`); `--with-ui` adds Chromium's shared libraries for the
 Playwright tier; `--no-selfcheck` skips the PASS/FAIL table, which you should never do for a real run,
 because that table is the only thing separating "the script finished" from "the box is ready".
-
 ## The four tiers
 
 | Tier | What it proves | Driver |

@@ -85,10 +85,15 @@ sealed class TestDatabase : IDbContextFactory<AppDbContext>, IAsyncDisposable
         await db.SaveChangesAsync();
     }
 
-    public RetentionService NewRetention(int rawDays) => new(
+    public RetentionService NewRetention(int rawDays, bool runRetention = true) => new(
         this,
         new FakeSettings(rawDays),
-        Options.Create(new EngineOptions { RawRetentionDays = rawDays, HourlyRetentionDays = 180 }),
+        Options.Create(new EngineOptions
+        {
+            RawRetentionDays = rawDays,
+            HourlyRetentionDays = 180,
+            RunRetention = runRetention,
+        }),
         NullLogger<RetentionService>.Instance);
 }
 

@@ -41,6 +41,27 @@ public sealed class EngineOptions
     /// </summary>
     public int IncidentCorrelationWindowMinutes { get; set; } = 10;
 
+    /// <summary>
+    /// Whether <see cref="RetentionService"/>'s daily timer runs in this process. Default true, which is
+    /// right for any install that owns its own database.
+    /// <para>
+    /// <b>Turn it off wherever several processes share one database.</b> Retention reaches for raw SQL
+    /// on purpose — a set-based rollup that never materialises a heartbeat, and a bounded delete whose
+    /// write lock stays short — and raw SQL sees the whole table. It has no notion of which rows belong
+    /// to whom, and nothing above it can give it one: a global query filter does not apply to a command
+    /// the caller wrote by hand. So N processes over one database means each of them prunes <i>all</i> of
+    /// it, on whichever retention window that process happens to be configured with, and writes every
+    /// other process's rollups into its own rows.
+    /// </para>
+    /// <para>
+    /// Setting this false does not make retention happen elsewhere. Such a deployment still owes its
+    /// data a cleanup, and owes it exactly once, centrally, from something that is allowed to see
+    /// everything — <see cref="RetentionService.RunCleanupAsync"/> is public and callable for that.
+    /// Leaving this true is the option that loses other people's data.
+    /// </para>
+    /// </summary>
+    public bool RunRetention { get; set; } = true;
+
     public int ResolveMaxConcurrency()
         => MaxConcurrentChecks > 0 ? MaxConcurrentChecks : Math.Clamp(Environment.ProcessorCount * 4, 8, 32);
 }

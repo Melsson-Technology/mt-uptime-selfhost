@@ -92,10 +92,9 @@ public class MySqlCheckerE2E : IClassFixture<CheckerHost>
         //
         // CHAIN errors, not name errors — which is why this is a theory over both spellings and both
         // fail identically. The one structural difference found between this and every validation
-        // that succeeds: mysqld sends TWO certificates in the handshake (leaf + its own CA, because
-        // `ssl-ca` is configured) where nginx sends one. That is a correlation, not a proof — .NET
-        // reports SslPolicyErrors granularity and the specific X509ChainStatus is not recoverable
-        // from the exception — so it is recorded as the leading hypothesis rather than as the cause.
+        // that succeeds: mysqld sends TWO certificates in the handshake (leaf + its own CA) where
+        // nginx sends one. That is a correlation, not a proof — .NET reports SslPolicyErrors
+        // granularity and the specific X509ChainStatus is not recoverable from the exception.
         //
         // Why this matters to a user rather than only to us: the editor describes VerifyFull as "the
         // only mode that resists an on-path attacker, and the right choice for any database reached
@@ -103,9 +102,40 @@ public class MySqlCheckerE2E : IClassFixture<CheckerHost>
         // not work against a MySQL server configured with ssl-ca — a common configuration — then the
         // mode that the product recommends most strongly is the one that fails.
         //
-        // The next step, deliberately not taken here because it perturbs the box mid-run: comment out
-        // `ssl-ca` in the server's config and re-run. If VerifyFull then connects, the hypothesis is
-        // confirmed and the question becomes what MT-Uptime should do about it.
+        // ─────────────────────────────────────────────────────────────────────────────────────────
+        //  THE TWO-CERTIFICATE THEORY IS UNTESTED, NOT CONFIRMED. TWO ATTEMPTS, BOTH NO-OPS.
+        //
+        //  2026-09-04, on the second box. Do not repeat either of these expecting an answer.
+        //
+        //  1. Commenting out `ssl-ca` server-side and restarting mysqld did NOT change the
+        //     handshake. This test still passed, and `openssl s_client -starttls mysql` still
+        //     listed two chain entries afterwards — entry 1 being our own Test CA, not MySQL's
+        //     auto-generated one. So either the config never applied or `ssl-ca` is not the lever
+        //     that decides what mysqld puts in its chain. `SHOW VARIABLES WHERE Variable_name IN
+        //     ('ssl_ca','ssl_cert','ssl_capath')` distinguishes those two and was never run.
+        //
+        //  2. Concatenating the CA onto nginx's leaf, to test the same theory from the side that
+        //     currently succeeds, never ran at all: the command named the repo's source filename
+        //     rather than the installed /etc/nginx/conf.d/mt-uptime-e2e.conf, so the sed failed,
+        //     nginx reloaded an unchanged config, and A_trusted_certificate_is_Up_over_HTTPS passed
+        //     because nothing had changed. That experiment is still available and still untried,
+        //     and it is the better one — it moves the variable on the side we control cleanly.
+        //
+        //  MEASUREMENT TRAP, which inverted the conclusion once before being caught:
+        //  `s_client -showcerts | grep -c 'BEGIN CERTIFICATE'` is NOT the chain length. The output
+        //  repeats the leaf in its "Server certificate" section, so a one-certificate chain also
+        //  counts 2. Count the numbered chain entries instead:
+        //
+        //      openssl s_client -starttls mysql -connect 127.0.0.1:3306 </dev/null 2>/dev/null \
+        //          | grep -E '^ *[0-9]+ [si]:'
+        //
+        //  WHERE TO LOOK NEXT, and it is not the box. MySqlChecker sets nothing unusual — SslMode,
+        //  Server, no SslCa, no RemoteCertificateValidationCallback (MySqlChecker.cs:26-44) — so
+        //  the divergence from Npgsql and from .NET's own HTTPS validation lives inside
+        //  MySqlConnector's VerifyFull path. A ~15-line console app against one MySQL server,
+        //  VerifyFull versus VerifyCA, with no product and no battery around it, will say more than
+        //  any further configuration archaeology on a box running five other services.
+        // ─────────────────────────────────────────────────────────────────────────────────────────
         //
         // Asserted as it behaves so the day it changes, this fails and gets rewritten — the same way
         // HttpCheckerE2E's certificate-message assertion was flipped once the reason stopped being

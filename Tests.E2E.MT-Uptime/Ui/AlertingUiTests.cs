@@ -251,9 +251,16 @@ public class AlertingUiTests : IClassFixture<UiFixture>
 
         // Named rather than positional. These rows happen to carry one link, but StatusPages carries
         // two and the positional form silently clicked the wrong one there — see U6.
-        await row.First.GetByRole(AriaRole.Link, new() { Name = "Edit", Exact = true }).ClickAsync();
-        await page.GetByRole(AriaRole.Button, new() { Name = "Delete", Exact = true }).ClickAsync();
-        await page.WaitForURLAsync(u => !u.Contains("/edit", StringComparison.Ordinal));
+        // Followed rather than clicked, so the editor's circuit is up before Delete is pressed.
+        await Forms.FollowToInteractiveAsync(
+            page,
+            row.First.GetByRole(AriaRole.Link, new() { Name = "Edit", Exact = true }));
+
+        await Forms.ClickAndConfirmUrlAsync(
+            page,
+            page.GetByRole(AriaRole.Button, new() { Name = "Delete", Exact = true }),
+            u => !u.Contains("/edit", StringComparison.Ordinal),
+            "Delete");
     }
 
     private static async Task DeleteMaintenanceWindowAsync(IPage page, string name)
@@ -266,8 +273,15 @@ public class AlertingUiTests : IClassFixture<UiFixture>
 
         // Named rather than positional. These rows happen to carry one link, but StatusPages carries
         // two and the positional form silently clicked the wrong one there — see U6.
-        await row.First.GetByRole(AriaRole.Link, new() { Name = "Edit", Exact = true }).ClickAsync();
-        await page.GetByRole(AriaRole.Button, new() { Name = "Delete", Exact = true }).ClickAsync();
-        await page.WaitForURLAsync(u => !u.Contains("/edit", StringComparison.Ordinal));
+        // Followed rather than clicked, so the editor's circuit is up before Delete is pressed.
+        await Forms.FollowToInteractiveAsync(
+            page,
+            row.First.GetByRole(AriaRole.Link, new() { Name = "Edit", Exact = true }));
+
+        await Forms.ClickAndConfirmUrlAsync(
+            page,
+            page.GetByRole(AriaRole.Button, new() { Name = "Delete", Exact = true }),
+            u => !u.Contains("/edit", StringComparison.Ordinal),
+            "Delete");
     }
 }

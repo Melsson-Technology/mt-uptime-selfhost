@@ -5,20 +5,22 @@
 #   sudo ./install-mt-uptime.sh <hostname> [--skip-sdk] [--skip-build] [--package <tar.gz>]
 #
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
-#  DO NOT USE THIS FOR THE FIRST INSTALL ON A BOX
+#  WHICH OF THE TWO AUDIENCES YOU ARE
 #
-#  The first pass is done BY HAND, following deploy/README-deploy.md literally, because that is the
-#  test: the README is the product's install instructions, and every command in it that misbehaves is
-#  a finding. Walking two shell scripts by hand is how the S2 pass found twelve defects no test could
-#  reach. A script that papers over a broken step also hides it.
+#  RUNNING THE BATTERY to see it work? This is the supported path, first install included — it is
+#  what e2e/README.md's step 3 tells you to run, and there is nothing to do by hand.
 #
-#  This exists for the second install onward — after the battery has found something, it is fixed on
-#  main, and the box needs the new build. At that point the README has already been walked and
-#  replaying it is just cost.
+#  VALIDATING A RELEASE? Do NOT use this for the first install on a box. Do that pass BY HAND,
+#  following deploy/README-deploy.md literally, because that is the test: the README is the product's
+#  install instructions, and every command in it that misbehaves is a finding. Walking two shell
+#  scripts by hand is how the S2 pass found twelve defects no test could reach. A script that papers
+#  over a broken step also hides it. Use this from the second install onward — once the battery has
+#  found something, it is fixed on main, and the box needs the new build.
 #
 #  It is a REPLAY, not an improvement. Every command below is the README's own, in the README's
 #  order, with no fixes applied. If one of them needs a workaround, that workaround belongs in the
-#  README and in a finding — not here, where it would silently stop being reproducible.
+#  README and in a finding — not here, where it would silently stop being reproducible. That property
+#  is exactly what makes it a fine way to install and a useless way to audit.
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 #
 #   <hostname>       passed to provision.sh; becomes nginx's server_name. The box's public DNS name
@@ -49,7 +51,7 @@ while [[ $# -gt 0 ]]; do
         --skip-build) SKIP_BUILD=1; shift ;;
         --package)    PACKAGE="${2:?--package needs a path}"; shift 2 ;;
         --package=*)  PACKAGE="${1#--package=}"; shift ;;
-        -h|--help)    sed -n '2,34p' "$0"; exit 0 ;;
+        -h|--help)    sed -n '2,36p' "$0"; exit 0 ;;
         -*)           echo "unknown option: $1" >&2; echo "try: $0 --help" >&2; exit 1 ;;
         *)
             if [[ -n "$HOSTNAME_ARG" ]]; then
