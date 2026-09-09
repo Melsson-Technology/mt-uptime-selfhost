@@ -311,4 +311,13 @@ so reset works. The token is destroyed as soon as the account is created.
 
 - **Backups:** back up `/var/lib/mt-uptime/` — it holds both the SQLite database **and** the Data Protection keys. If the keys are lost, all encrypted secrets (SendGrid API key, monitored-DB passwords) become undecryptable and every login cookie is invalidated.
 - **Redeploys:** overwrite `/opt/mt-uptime` and `sudo systemctl restart mt-uptime`. The database and keys in `/var/lib/mt-uptime` are untouched; pending EF migrations apply automatically on startup.
+- **A redeploy does not update the unit file, and that has bitten us.** `deploy-on-server.sh` swaps the
+  build and deliberately never writes `/etc/systemd/system/mt-uptime.service`, because operators
+  hand-edit it and a deploy that silently reverted those edits would be worse. The cost is that a change
+  to the *shipped* unit reaches a fresh install and no existing one. When the shipped unit moved off port
+  5000, our own box kept a unit declaring 5000 for weeks while listening on 5081 — its env file supplied
+  the real port, so the service was fine and everything that *read* the unit was wrong, which is the
+  worst combination. `deploy-on-server.sh` now prints the difference on every deploy; when you see it,
+  review and copy the shipped unit over yourself. Drop-ins in `mt-uptime.service.d/` are not part of
+  that comparison and keep applying either way.
 - **Config overrides:** the service file sets `Storage__DatabasePath` and `Storage__DataProtectionKeysPath` to `/var/lib/mt-uptime/…`. Adjust via `systemctl edit mt-uptime` if needed.

@@ -74,6 +74,33 @@ fi
 # So decide it here, where the build has just been unpacked and can be inspected, rather than asking
 # the operator to know. libcoreclr.so is the marker: it ships only with a self-contained publish.
 # Switching build types either way is handled, because the drop-in is rewritten or removed on every
+
+# WARN WHEN THE INSTALLED UNIT HAS FALLEN BEHIND THE SHIPPED ONE.
+#
+# This script swaps the build. It has never installed the unit, deliberately: an operator's
+# /etc/systemd/system/mt-uptime.service is frequently hand-edited, and overwriting it on every deploy
+# would silently undo that. The cost of never touching it is that a change to the SHIPPED unit reaches
+# a fresh install and no existing one, forever, with nothing saying so.
+#
+# That is not hypothetical. The shipped unit moved off port 5000 in "Make the shipped deploy path safe
+# on a host that runs something else"; our own production box kept the old unit for weeks. It only kept
+# working because its env file set the real port, so the unit's value was overridden and wrong at the
+# same time -- which is the worst combination, because everything that reads the unit reports a port
+# nothing is listening on. Two of us then spent a while diagnosing a health check aimed at it.
+#
+# So: compare, and say so. Never overwrite -- the operator decides.
+SHIPPED_UNIT="$(dirname "$0")/${SERVICE}.service"
+INSTALLED_UNIT="/etc/systemd/system/${SERVICE}.service"
+if [[ -f "$SHIPPED_UNIT" && -f "$INSTALLED_UNIT" ]] && ! diff -q "$SHIPPED_UNIT" "$INSTALLED_UNIT" >/dev/null 2>&1; then
+    echo "==> NOTE: the installed unit differs from the one shipped with this build."
+    echo "    Drop-ins in ${SERVICE}.service.d/ still apply and are not part of this comparison."
+    diff -u "$INSTALLED_UNIT" "$SHIPPED_UNIT" 2>/dev/null \
+        | grep -E '^[+-]' | grep -vE '^[+-]{3}' | grep -v '^[+-][[:space:]]*#' | sed 's/^/      /'
+    echo "    Review, and if you want the shipped one:"
+    echo "      sudo cp $INSTALLED_UNIT ${INSTALLED_UNIT}.bak && sudo cp $SHIPPED_UNIT $INSTALLED_UNIT"
+    echo "      sudo systemctl daemon-reload && sudo systemctl restart ${SERVICE}"
+fi
+
 # deploy rather than only created once.
 DROPIN_DIR="/etc/systemd/system/${SERVICE}.service.d"
 DROPIN="$DROPIN_DIR/10-apphost.conf"
