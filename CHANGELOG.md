@@ -22,6 +22,23 @@ versioning will follow [Semantic Versioning](https://semver.org/) from 1.0.0 onw
 
 ### Changed
 
+- **The interface now carries MT-Uptime's own mark rather than the Melsson Technology gear.** A clock
+  whose hands are replaced by a rising trend line. It appears in the browser tab, the navigation bar,
+  the sign-in, forgot-password and reset-password pages, and above the title of every public status
+  page. Nothing about behaviour changes.
+
+  The files did change, though, and a deployment that substitutes its own branding needs to know which
+  ones. `wwwroot/favicon.svg` and `wwwroot/apple-touch-icon.png` are new. `wwwroot/favicon.ico` now
+  carries five sizes (16, 24, 32, 48, 64), each drawn at its own size rather than downscaled from one
+  master, because the hour ticks turn to mush below 48px and a thin stroke renders grey rather than
+  thin. `wwwroot/img/mt-uptime-mark.svg` is the transparent version and is what the in-app lockups
+  reference. All four are declared in `Components/App.razor` or referenced from the components named
+  above.
+
+  `wwwroot/img/logo_red_gear.png` is still shipped and is no longer referenced by anything in the
+  engine. It is kept so that an existing deployment which references it from its own customisation
+  does not 404, and it can be deleted if yours does not.
+
 - **`Engine:RunRetention=false` now disables retention entirely, including the "Run cleanup now" button
   on the Settings page.** It previously stopped only the daily timer, and the manual run pruned
   regardless. If you set this flag expecting "no scheduled cleanup, but I can still trigger one", that

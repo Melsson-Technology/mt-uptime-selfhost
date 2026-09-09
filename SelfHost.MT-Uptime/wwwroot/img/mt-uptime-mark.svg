@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="17 17 222 222" role="img" aria-label="MT-Uptime">
+  <title>MT-Uptime</title>
+  <g fill="none" stroke="#DC1C12" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="128" cy="128" r="100" stroke-width="22"/>
+    <path d="M128 44v10M202 128h10M128 202v10M44 128h10" stroke-width="12"/>
+    <path d="M73.1 162.2L107.3 128L135.2 148.7L182.9 91.1" stroke-width="21"/>
+  </g>
+</svg>

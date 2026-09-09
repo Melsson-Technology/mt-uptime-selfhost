@@ -6,8 +6,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <base href="/" />
     <ResourcePreloader />
+    @* MT-Uptime's mark: a clock whose hands are a trend line.
+       Current browsers take the SVG and ignore the rest. favicon.ico is kept, and kept
+       unfingerprinted, because browsers ask for /favicon.ico by that exact path whatever this tag
+       says — a fingerprinted name would leave that request hitting the 404 page.
+       The .ico carries 16/24/32/48/64, each DRAWN at its size rather than downscaled: the hour ticks
+       are dropped below 48 and the ring is thickened, because a thin stroke at 16px renders grey
+       rather than thin. All four files come out of one generator, so editing a single size by hand
+       puts it out of step with the others and it will look worse, not better. *@
     <link rel="icon" href="favicon.ico" sizes="any" />
-    <link rel="icon" type="image/png" href="@Assets["img/logo_red_gear.png"]" />
+    <link rel="icon" type="image/svg+xml" href="@Assets["favicon.svg"]" />
+    <link rel="apple-touch-icon" href="@Assets["apple-touch-icon.png"]" />
     <link rel="stylesheet" href="@Assets["app.css"]" />
     <link rel="stylesheet" href="@Assets["MT.Uptime.Web.styles.css"]" />
     @* <ImportMap /> is deliberately absent.
