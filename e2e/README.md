@@ -17,17 +17,15 @@ PostgreSQL with TLS from a locally-minted CA — and gives the tests a root-owne
 and restore each one on demand.
 
 > **Status: complete, and proven on a real box.** All four tiers have run against actual target
-> services, most recently 2026-09-10 — 50/50 targets (twice), 36/36 Tier 0, 114/114 Tier 1, 21/21
-> Tier 2 and 18/18 Tier 3. Two of the Tier 1 tests assert a documented product limitation rather than
-> expecting it to work (MySQL `VerifyFull`, see `MySqlCheckerE2E`), so their passing is the intended
-> outcome.
+> services — **Tier 1 at its full 122 on 2026-09-10**, alongside 50/50 targets (twice), 36/36 Tier 0,
+> 21/21 Tier 2 and 18/18 Tier 3. Two of the Tier 1 tests assert a documented product limitation rather
+> than expecting it to work (MySQL `VerifyFull`, see `MySqlCheckerE2E`), so their passing is the
+> intended outcome.
 >
-> **Tier 1 is now 122, not 114.** `HttpDiagnosticsE2E` — eight tests covering the evidence a failing
-> HTTP check keeps — was added *after* that run, because the run itself showed the battery had no
-> coverage of it at all. Six of the eight were verified against a real socket on a developer machine
-> using a stand-in fixture; the two that need the battery's own targets (`break http`, and the expired
-> certificate on `HTTPS_EXPIRED_PORT`) have not yet run on a prepared box. If one of those two is what
-> fails for you, please say so in an issue — that is a gap in our verification, not in your machine.
+> `HttpDiagnosticsE2E` — eight tests covering the evidence a failing HTTP check keeps — was added after
+> an earlier run showed the battery had no coverage of that feature at all, and it is what took Tier 1
+> from 114 to 122. All eight have since run green on a prepared box, including the two that need the
+> battery's own targets: `break http`, and the expired certificate on `HTTPS_EXPIRED_PORT`.
 >
 > Getting there took eighteen fixes to the battery itself, and it is worth saying what kind: systemd
 > cutting a command at a semicolon, a umask leaking into a directory two hundred lines from where it
@@ -132,6 +130,20 @@ this box — so the UI tier cannot sign in for up to five minutes afterwards. Th
 tiers need no login and absorb that wait for free, and `smoke.sh` prints when the limiter is clear.
 `--tier all` exists, but xUnit chooses the order inside it, so the cooldown can land *on* the UI
 tests rather than ahead of them.
+
+> **The UI tier is one sign-in away from that limit, and this is worth knowing before you add a test
+> to it.** `UiFixture.SignInAsync` performs a real sign-in per test, so 18 tests spend 18 of the 20
+> permits in that five-minute window. A nineteenth was tried on 2026-09-10 and the tier failed —
+> **inside `SignInAsync`, with a navigation timeout that reads like a broken page rather than a spent
+> budget.** The limit is not configurable and should not be: it is what stops offline-speed password
+> guessing and keeps an anonymous caller from starving the monitoring runners of PBKDF2 CPU.
+>
+> Signing in once and replaying the cookie jar via `StorageStateAsync` is the obvious fix and was
+> tried; it made things worse rather than better (two *different* tests then failed), so it was
+> reverted rather than shipped half-understood. **Anyone growing this tier needs to solve the budget
+> first** — and note the second constraint it collides with: `AssemblyInfo.cs` explains that every
+> monitor on this box correlates to one incident key, `ip:127.0.0.1`, inside a ten-minute window, so a
+> new test that produces an outage is visible to the other tests that produce outages.
 
 ### 6. Destroy the machine
 

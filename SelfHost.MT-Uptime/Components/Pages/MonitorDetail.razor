@@ -49,7 +49,10 @@ else
     {
         <div class="alert warn incident-banner">
             <span>
-                <strong>Part of an open incident.</strong>
+                @* The space is an entity, not literal whitespace: Razor strips the newline and indent
+                   between this element and the @@if below, so the sentence rendered as
+                   "…open incident.No other monitor is affected." on a real page. *@
+                <strong>Part of an open incident.</strong>&#32;
                 @if (incident.MonitorCount > 1)
                 {
                     <text>@(incident.MonitorCount - 1) other monitor@(incident.MonitorCount == 2 ? " is" : "s are") affected — this is not just this one.</text>
