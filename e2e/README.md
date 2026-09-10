@@ -17,9 +17,17 @@ PostgreSQL with TLS from a locally-minted CA — and gives the tests a root-owne
 and restore each one on demand.
 
 > **Status: complete, and proven on a real box.** All four tiers have run against actual target
-> services — 50/50 targets, 36/36 Tier 0, 114/114 Tier 1, 21/21 Tier 2 and 18/18 Tier 3. Two of the
-> Tier 1 tests assert a documented product limitation rather than expecting it to work (MySQL
-> `VerifyFull`, see `MySqlCheckerE2E`), so their passing is the intended outcome.
+> services, most recently 2026-09-10 — 50/50 targets (twice), 36/36 Tier 0, 114/114 Tier 1, 21/21
+> Tier 2 and 18/18 Tier 3. Two of the Tier 1 tests assert a documented product limitation rather than
+> expecting it to work (MySQL `VerifyFull`, see `MySqlCheckerE2E`), so their passing is the intended
+> outcome.
+>
+> **Tier 1 is now 122, not 114.** `HttpDiagnosticsE2E` — eight tests covering the evidence a failing
+> HTTP check keeps — was added *after* that run, because the run itself showed the battery had no
+> coverage of it at all. Six of the eight were verified against a real socket on a developer machine
+> using a stand-in fixture; the two that need the battery's own targets (`break http`, and the expired
+> certificate on `HTTPS_EXPIRED_PORT`) have not yet run on a prepared box. If one of those two is what
+> fails for you, please say so in an issue — that is a gap in our verification, not in your machine.
 >
 > Getting there took eighteen fixes to the battery itself, and it is worth saying what kind: systemd
 > cutting a command at a semicolon, a umask leaking into a directory two hundred lines from where it
@@ -115,7 +123,7 @@ the UI tier skips itself entirely. **Do not complete the wizard in a browser fir
 ./e2e/run-tests.sh --tier ui
 ```
 
-**Expect `114`, `21` and `18` passing.** Two of the checker tests assert the MySQL `VerifyFull`
+**Expect `122`, `21` and `18` passing.** Two of the checker tests assert the MySQL `VerifyFull`
 limitation rather than expecting it to work, so those passing is the correct outcome, not a mystery.
 
 **Keep them in that order.** `smoke.sh` deliberately exhausts the sign-in limiter — 20 attempts per
@@ -238,7 +246,7 @@ certificates at all.
 | ✅ `run-tests.sh` | Tier selection, the manifest gate, the Chromium install, the empty-tier guard |
 | ✅ `install-mt-uptime.sh` | A replay of the deploy README, for the second install onward |
 | ✅ `Support/TargetControl.cs`, `Support/WebhookSink.cs` | Break/restore with restore-on-dispose; an HTTP endpoint alerts are delivered to |
-| ✅ Tier 1 — the checker matrix | **114 tests** across the six actively-probed monitor types |
+| ✅ Tier 1 — the checker matrix | **122 tests** across the six actively-probed monitor types, including the failure-diagnostics capture |
 | ✅ Tier 2 — pipeline scenarios | **21 scenarios** driving the whole running engine, target to webhook |
 | ✅ Tier 3 — the browser tier | **18 tests** driving the installed instance through headless Chromium |
 

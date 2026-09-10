@@ -151,10 +151,18 @@ public sealed class HttpChecker(IHttpClientFactory httpFactory, ISecretProtector
             var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             foreach (var name in CheckDiagnostics.InterestingHeaders)
             {
-                // Response and content headers are separate collections in .NET; a caller asking for
-                // "location" must not silently miss a "content-type".
-                if (resp.Headers.TryGetValues(name, out var values) ||
-                    resp.Content.Headers.TryGetValues(name, out values))
+                // NonValidated, so the header arrives as the server actually sent it. The typed
+                // collections parse structured headers first: `Server: nginx/1.24.0 (Ubuntu)` is a
+                // *product list*, so TryGetValues hands back two elements and joining them produced
+                // "nginx/1.24.0, (Ubuntu)" — a comma the origin never sent, in the one field whose job
+                // is to identify the server. Found on a real nginx; every stubbed test used a
+                // single-token value like "cloudflare", which cannot show it.
+                //
+                // Genuinely repeated header lines still join with ", ", which is what RFC 9110 says
+                // they mean. Response and content headers stay separate collections in .NET, so a
+                // caller asking for "location" must not silently miss a "content-type".
+                if (resp.Headers.NonValidated.TryGetValues(name, out var values) ||
+                    resp.Content.Headers.NonValidated.TryGetValues(name, out values))
                 {
                     headers[name] = Clean(string.Join(", ", values), 200)!;
                 }
