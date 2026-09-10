@@ -115,6 +115,11 @@ public static class MtUptimeHosting
         builder.Services.AddSingleton(publicUrl);
         builder.Services.AddSingleton<PublicStatusCache>();
 
+        // The engine builds the "full diagnostics" link in alerts from the same origin, so the operator
+        // configures it once rather than discovering a second key only when a link comes out wrong.
+        builder.Services.Configure<EngineOptions>(
+            o => o.PublicBaseUrl = builder.Configuration["App:PublicBaseUrl"]);
+
         // Declaring the public URL also tightens host filtering, which otherwise defaults to "*" and accepts any
         // Host header. Only narrowed when the operator has not set AllowedHosts themselves, so an explicit value
         // (several hostnames, a wildcard domain) is never overridden.

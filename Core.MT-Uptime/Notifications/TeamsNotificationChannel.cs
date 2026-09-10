@@ -54,7 +54,7 @@ public sealed class TeamsNotificationChannel(IHttpClientFactory http, ISecretPro
                             new
                             {
                                 type = "TextBlock",
-                                text = NotificationRenderer.PlainText(evt),
+                                text = NotificationRenderer.PlainText(evt, NotificationRenderer.VerbosityFor(Type)),
                                 wrap = true,
                             },
                         },

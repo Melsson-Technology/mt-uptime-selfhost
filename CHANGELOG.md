@@ -91,11 +91,32 @@ previous published version.
   host reads "acme-web is DOWN (+19 more)" and lists what else is affected and which address they share,
   rather than arriving as the twentieth identical-looking alert in a minute. A single-monitor outage says
   nothing about incidents at all, so the extra lines only appear when they mean something.
-- **Alerts carry enough context to say what broke**: the address the target resolved to, the last response
-  code, the last few response times so a slow decline is visible, and the certificate expiry — but only
-  when it is within thirty days or already past, since a certificate good for another nine months is not
-  a clue. Structured consumers get the same detail as nested `incident` and `diagnostics` objects on the
-  webhook payload and in PagerDuty custom details; existing webhook fields are unchanged.
+- **Alerts carry enough context to say what broke**: the address the target resolved to, the last good
+  response, the last few response times so a slow decline is visible, how long the previous state had
+  held, and the certificate expiry — but only when it is within thirty days or already past, since a
+  certificate good for another nine months is not a clue. Structured consumers get the same detail as
+  nested `incident` and `diagnostics` objects on the webhook payload and in PagerDuty custom details.
+- **Alerts explain the status code rather than just quoting it.** `Unexpected status 521` now comes with
+  "Cloudflare is answering, but the origin refused the connection" — which is a different 03:00 call from
+  "the website is down". Covers Cloudflare's 520–530 range plus 401, 403, 429 and 502–504. Codes that
+  explain themselves are deliberately not glossed: padding every alert trains people to skip the detail.
+- **A failing HTTP check keeps the evidence.** Selected response headers (`cf-ray`, `server`,
+  `retry-after`, `location` and a few more — an allowlist, so a `set-cookie` is never persisted or
+  emailed), a tag-stripped snippet of the response body, the final URL when redirects moved the request,
+  and a timing breakdown splitting the total into DNS, TCP connect, TLS handshake and time-to-first-byte.
+  A 21-second response now says *where* the 21 seconds went. Gathered only when a check fails — a healthy
+  check does not even read the response body — and stored on the heartbeat, so it expires with the
+  history it belongs to rather than needing its own retention.
+- **Failure messages keep the inner exception.** A TLS failure used to report "The SSL connection could
+  not be established, see inner exception." — a sentence whose entire content is an instruction to look
+  at the part that was being discarded. The words "certificate" and "chain" are now in the alert. The
+  same fix distinguishes *connection refused* from *timed out* from *host not found*, which behind a CDN
+  is most of the diagnosis. Where the chain has several links they are joined with `→`.
+- **Alerts are sized to the channel they go to.** Email, Slack, Teams and Discord carry the full evidence
+  inline. ntfy, Telegram and Gotify are read on a lock screen and enforce payload limits an oversized
+  body silently fails against, so they get the diagnosis plus a link to the rest — set `App:PublicBaseUrl`
+  and the link appears; leave it unset and the alert simply has no link rather than a guessed one. The
+  monitor page grows a **Last failure diagnostics** panel, which is where that link lands.
 - **Maintenance windows.** One-off or repeating, scoped to individual monitors, to tags, or to the whole
   instance. Repeating windows are scheduled by wall-clock in a time zone you choose, so "Sundays at 02:00"
   stays at 02:00 across daylight-saving changes. During a window, failures do not alert — and the affected
@@ -106,6 +127,19 @@ previous published version.
   "Untagged" filter for finding what you have not labelled yet. Tag names are unique case-insensitively,
   so "Prod" and "prod" cannot become two tags that each match half your monitors. Deleting a tag
   unassigns it everywhere and leaves the monitors alone.
+
+#### Breaking — webhook and PagerDuty payloads
+
+- `diagnostics.lastStatusCode` on the webhook payload is renamed **`lastGoodStatusCode`**
+  (`last_status_code` → `last_good_status_code` in PagerDuty custom details), and now means what it says.
+  It previously meant "the newest heartbeat's status code", which raced the asynchronous heartbeat
+  writer: depending on which won, it reported either the failure — duplicating the alert's own detail —
+  or the state before it. A real alert read `Detail: Unexpected status 521` directly above
+  `Last response code: 200`, which is that race showing both halves at once.
+- Consumers that wanted the failing code should read the new top-level **`statusCode`** (`status_code`),
+  which is carried from the check itself and never raced. `statusCodeMeaning`, `attempt`,
+  `diagnostics.lastGoodResponseTimeMs`, `diagnostics.lastGoodAt` and `diagnostics.previousStateSince`
+  are also new.
 
 ### Accounts
 

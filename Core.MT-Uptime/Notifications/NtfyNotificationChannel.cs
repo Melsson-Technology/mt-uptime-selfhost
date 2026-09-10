@@ -30,7 +30,7 @@ public sealed class NtfyNotificationChannel(IHttpClientFactory http, ISecretProt
 
         using var req = new HttpRequestMessage(HttpMethod.Post, url)
         {
-            Content = new StringContent(NotificationRenderer.PlainText(evt), Encoding.UTF8, "text/plain"),
+            Content = new StringContent(NotificationRenderer.PlainText(evt, NotificationRenderer.VerbosityFor(Type)), Encoding.UTF8, "text/plain"),
         };
 
         // Header values must be Latin-1-safe: ntfy expects RFC 2047 encoding for anything else, and a

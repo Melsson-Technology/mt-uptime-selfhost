@@ -15,7 +15,7 @@ public sealed class TelegramNotificationChannel(IHttpClientFactory http, ISecret
         var token = Reveal(cfg?.BotToken);
         if (string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(cfg?.ChatId)) return false;
 
-        var text = $"{NotificationRenderer.Subject(evt)}\n{NotificationRenderer.PlainText(evt)}";
+        var text = $"{NotificationRenderer.Subject(evt)}\n{NotificationRenderer.PlainText(evt, NotificationRenderer.VerbosityFor(Type))}";
         var resp = await Http.PostAsJsonAsync(
             $"https://api.telegram.org/bot{token}/sendMessage",
             new { chat_id = cfg.ChatId, text }, ct);

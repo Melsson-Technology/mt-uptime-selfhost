@@ -32,7 +32,7 @@ public sealed class GotifyNotificationChannel(IHttpClientFactory http, ISecretPr
             Content = JsonContent.Create(new
             {
                 title = $"{tag}: {evt.MonitorName}",
-                message = NotificationRenderer.PlainText(evt),
+                message = NotificationRenderer.PlainText(evt, NotificationRenderer.VerbosityFor(Type)),
                 priority = PriorityOf(NotificationRenderer.SeverityOf(evt.Kind)),
             }),
         };

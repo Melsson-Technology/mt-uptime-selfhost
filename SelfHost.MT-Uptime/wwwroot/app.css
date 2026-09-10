@@ -163,6 +163,16 @@ table.events th { font-size: .7rem; text-transform: uppercase; letter-spacing: .
 table.events tr:last-child td { border-bottom: none; }
 table.events td.reason { color: var(--muted); max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* --- Last failure diagnostics (monitor detail) ---
+   A definition list rather than a table: the rows are label/value pairs of wildly differing length —
+   a cf-ray is 20 characters and a quoted error page is 300 — which a table would either truncate or
+   let stretch the column for every other row. */
+dl.diagnostics { display: grid; grid-template-columns: minmax(7rem, max-content) 1fr; gap: .35rem .9rem; margin: 0; font-size: .85rem; }
+dl.diagnostics dt { color: var(--muted); font-size: .7rem; text-transform: uppercase; letter-spacing: .03em; padding-top: .15rem; }
+/* Target-controlled text: it can be one long unbroken token, so it must wrap rather than widen the page. */
+dl.diagnostics dd { margin: 0; overflow-wrap: anywhere; }
+dl.diagnostics dd span + span::before { content: " · "; color: var(--muted); }
+
 .page-header h1 .dot { width: 13px; height: 13px; vertical-align: middle; margin-right: .35rem; }
 
 /* --- Monitor picker (status page edit) --- */

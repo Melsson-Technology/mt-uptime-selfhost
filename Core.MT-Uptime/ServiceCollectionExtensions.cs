@@ -1,4 +1,7 @@
+using System.Diagnostics;
+using System.Net;
 using System.Net.Security;
+using System.Net.Sockets;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using MT.Uptime.Core.Monitoring;
@@ -98,7 +101,15 @@ public static class ServiceCollectionExtensions
         return services;
     }
 
-    /// <summary>Registers one HttpChecker probe client for a pair of per-monitor toggles.</summary>
+    /// <summary>
+    /// Registers one HttpChecker probe client for a pair of per-monitor toggles.
+    /// <para>
+    /// The timing instrumentation is applied here, in the one place all four clients are built, for the
+    /// same reason <see cref="HttpChecker.ClientNameFor"/> is a total mapping: the previous shape of that
+    /// method silently turned redirect-following back on for one combination, and four hand-written
+    /// registrations would let exactly that class of bug back in.
+    /// </para>
+    /// </summary>
     private static void AddProbeClient(IServiceCollection services, bool ignoreTlsErrors, bool followRedirects)
         => services.AddHttpClient(HttpChecker.ClientNameFor(ignoreTlsErrors, followRedirects), ConfigureMonitorClient)
             .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
@@ -111,7 +122,73 @@ public static class ServiceCollectionExtensions
                         RemoteCertificateValidationCallback = (_, _, _, _) => true,
                     }
                     : new SslClientAuthenticationOptions(),
+
+                // Splits connection setup into its parts so an alert can say where a slow probe spent
+                // its time. Only invoked when a new connection is actually opened; a pooled one skips
+                // straight past, which is itself reported (ProbeTimingBreakdown.ConnectionReused).
+                ConnectCallback = TimedConnectAsync,
+                PlaintextStreamFilter = (ctx, _) =>
+                {
+                    // Runs once the plaintext stream exists, i.e. after any TLS handshake. Measuring the
+                    // handshake as the gap since the socket connected is the only handle we get on it.
+                    ProbeTimings.Current?.RecordHandshakeComplete();
+                    return ValueTask.FromResult(ctx.PlaintextStream);
+                },
             });
+
+    /// <summary>
+    /// Opens a connection, timing the DNS lookup and the TCP handshake separately.
+    /// <para>
+    /// This replaces the default connect path for every HTTP monitor, so it deliberately mirrors what
+    /// the default does — resolve, then try the returned addresses in order — rather than improving on
+    /// it. <c>ConnectAsync</c> with the full address array preserves the fallback to a second address
+    /// when the first refuses, which is what makes a dual-stack or multi-A-record host work.
+    /// </para>
+    /// </summary>
+    private static async ValueTask<Stream> TimedConnectAsync(
+        SocketsHttpConnectionContext context, CancellationToken ct)
+    {
+        var timings = ProbeTimings.Current;
+        var sw = Stopwatch.StartNew();
+
+        IPAddress[] addresses;
+        try
+        {
+            addresses = await Dns.GetHostAddressesAsync(context.DnsEndPoint.Host, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            // Recorded even when resolution throws. Without this a DNS failure leaves every leg null,
+            // which is indistinguishable from a pooled connection — so ProbeTimingBreakdown.ConnectionReused
+            // reported "connection reused" on the one probe where DNS is the fault, telling the operator the
+            // network path was ruled out when nothing had been.
+            timings?.RecordDns(sw.Elapsed);
+        }
+
+        var socket = new Socket(SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+        try
+        {
+            sw.Restart();
+            try
+            {
+                await socket.ConnectAsync(addresses, context.DnsEndPoint.Port, ct).ConfigureAwait(false);
+            }
+            finally
+            {
+                // Same reason, and this is the leg the feature most wants: "refused after 20 s in the TCP
+                // connect" and "failed instantly at DNS" carry the same message and are completely
+                // different faults. Recording only successful connects threw that distinction away.
+                timings?.RecordConnect(sw.Elapsed);
+            }
+            return new NetworkStream(socket, ownsSocket: true);
+        }
+        catch
+        {
+            // The stream never got built, so nothing downstream will dispose the socket for us.
+            socket.Dispose();
+            throw;
+        }
+    }
 
     /// <summary>Applies the shared monitor User-Agent to a named HttpChecker client.</summary>
     private static void ConfigureMonitorClient(HttpClient client)

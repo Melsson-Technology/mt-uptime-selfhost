@@ -38,7 +38,7 @@ public static class ProbeFailure
     private const int MaxDepth = 3;
 
     /// <summary>
-    /// The outer message, followed by each distinct inner message, joined with <c>" — "</c>.
+    /// The outer message, followed by each distinct inner message, joined with <c>" → "</c> (an arrow rather than an em dash: this text reaches customer-facing alert bodies).
     /// <para>
     /// Distinct is doing real work: several driver exceptions repeat the wrapped message verbatim,
     /// and <c>"X — X"</c> reads like a bug in the monitoring tool rather than a fault in the target.
@@ -52,10 +52,21 @@ public static class ProbeFailure
     /// </summary>
     public static string Describe(Exception exception)
     {
+        // AggregateException's own message is boilerplate ("One or more errors occurred..."); its
+        // contents are the point. Flatten collapses nested aggregates in one step, and the first leaf
+        // is the one a probe cares about — a single check fails for a single reason. Guarded on count
+        // because an aggregate holding nothing but empty aggregates flattens to no leaves at all.
+        var root = exception;
+        if (exception is AggregateException aggregate)
+        {
+            var flattened = aggregate.Flatten().InnerExceptions;
+            if (flattened.Count > 0) root = flattened[0];
+        }
+
         var text = new StringBuilder();
         var seen = new List<string>(MaxDepth + 1);
 
-        for (var (ex, depth) = (exception, 0); ex is not null && depth <= MaxDepth; ex = ex.InnerException, depth++)
+        for (var (ex, depth) = (root, 0); ex is not null && depth <= MaxDepth; ex = ex.InnerException, depth++)
         {
             var message = ex.Message?.Trim();
             if (string.IsNullOrEmpty(message)) continue;
@@ -64,13 +75,13 @@ public static class ProbeFailure
             // has been said, adds nothing an operator can act on.
             if (seen.Any(s => s.Contains(message, StringComparison.Ordinal))) continue;
 
-            if (text.Length > 0) text.Append(" — ");
+            if (text.Length > 0) text.Append(" → ");
             text.Append(message);
             seen.Add(message);
         }
 
         // Some exceptions genuinely carry no message. Reporting the type is worse than nothing only
         // if the alternative is a real sentence, and here the alternative is an empty string.
-        return text.Length > 0 ? text.ToString() : exception.GetType().Name;
+        return text.Length > 0 ? text.ToString() : root.GetType().Name;
     }
 }

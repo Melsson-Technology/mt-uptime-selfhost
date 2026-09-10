@@ -29,7 +29,7 @@ public sealed class SendGridNotificationChannel(ILogger<SendGridNotificationChan
         var from = new EmailAddress(cfg.FromEmail, string.IsNullOrWhiteSpace(cfg.FromName) ? "MT-Uptime" : cfg.FromName);
         var to = new EmailAddress(cfg.ToEmail);
         var msg = MailHelper.CreateSingleEmail(from, to,
-            NotificationRenderer.Subject(evt), NotificationRenderer.PlainText(evt), NotificationRenderer.Html(evt));
+            NotificationRenderer.Subject(evt), NotificationRenderer.PlainText(evt, NotificationRenderer.VerbosityFor(Type)), NotificationRenderer.Html(evt));
 
         var resp = await client.SendEmailAsync(msg, ct);
         var ok = (int)resp.StatusCode is >= 200 and < 300;

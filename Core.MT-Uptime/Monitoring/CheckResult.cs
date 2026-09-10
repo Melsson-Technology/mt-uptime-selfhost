@@ -13,6 +13,17 @@ public sealed record CheckResult(
     bool Hard = false)
 {
     /// <summary>
+    /// The evidence behind a failure — response headers, a body snippet, where the time went. Gathered
+    /// only on the failure path, so this is null for the overwhelming majority of checks.
+    /// <para>
+    /// An init property rather than a constructor parameter so that neither the five other checkers nor
+    /// the factory methods below have to know about it: a monitor type that has nothing extra to say
+    /// keeps returning exactly what it returned before.
+    /// </para>
+    /// </summary>
+    public CheckDiagnostics? Diagnostics { get; init; }
+
+    /// <summary>
     /// Hard cap on <see cref="Message"/>, applied by the factories below so every checker inherits it.
     /// <para>
     /// A check message is the one field on this record that a <em>monitored target</em> controls: it
@@ -51,4 +62,17 @@ public sealed record CheckResult(
     /// </summary>
     public static CheckResult Down(string message, double? responseMs = null, string? statusCode = null, DateTime? certExpiresAt = null, bool hard = false)
         => new(CheckStatus.Down, responseMs, statusCode, Truncate(message)!, certExpiresAt, hard);
+
+    /// <summary>
+    /// A failed probe described by the exception that caused it, with the inner chain unwrapped by
+    /// <see cref="ProbeFailure.Describe"/>. Prefer this to <c>Down(ex.Message)</c> anywhere the exception came from
+    /// the network stack — see <see cref="ProbeFailure.Describe"/> for why the outer message is usually the useless one.
+    /// <para>
+    /// Deliberately <em>not</em> used for <c>SecretUnreadableException</c>, whose message we wrote
+    /// ourselves and whose inner exception is a cryptographic failure that would say nothing to an
+    /// operator and everything to an attacker. That call site passes <c>ex.Message</c> on purpose.
+    /// </para>
+    /// </summary>
+    public static CheckResult Down(Exception ex, double? responseMs = null, string? statusCode = null, DateTime? certExpiresAt = null, bool hard = false)
+        => Down(ProbeFailure.Describe(ex), responseMs, statusCode, certExpiresAt, hard);
 }

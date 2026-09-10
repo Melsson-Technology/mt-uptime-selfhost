@@ -58,6 +58,11 @@ public sealed class HttpChecker(IHttpClientFactory httpFactory, ISecretProtector
 
         var sw = Stopwatch.StartNew();
         HttpRequestMessage? req = null;
+
+        // Collects the DNS / connect / TLS legs from inside the pooled handler's callbacks. Cleared in
+        // the finally below so a later probe on a recycled thread cannot write into this one.
+        var timings = ProbeTimings.Begin();
+
         try
         {
             // Building the request is inside the try on purpose: an unparseable method or URL, or a
@@ -68,8 +73,16 @@ public sealed class HttpChecker(IHttpClientFactory httpFactory, ISecretProtector
             using var resp = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
             var code = (int)resp.StatusCode;
 
+            // ResponseHeadersRead means SendAsync returns as soon as the headers land, so this really is
+            // time-to-first-byte rather than time-to-complete-response.
+            var ttfbMs = sw.Elapsed.TotalMilliseconds;
+
+            var accepted = cfg.IsStatusAccepted(code);
+
+            // The body is read when a keyword needs matching, and otherwise only when the check has
+            // already failed — where a CDN or origin error page usually states the cause in words.
             string? body = null;
-            if (!string.IsNullOrEmpty(cfg.Keyword))
+            if (!string.IsNullOrEmpty(cfg.Keyword) || !accepted)
                 body = await ReadBodyPrefixAsync(resp, ct);
 
             sw.Stop();
@@ -77,8 +90,9 @@ public sealed class HttpChecker(IHttpClientFactory httpFactory, ISecretProtector
 
             // A received-but-unaccepted status is a definitive negative answer from the server —
             // mark it "hard" so the engine confirms Down at once instead of waiting out retries.
-            if (!cfg.IsStatusAccepted(code))
-                return CheckResult.Down($"Unexpected status {code}", ms, code.ToString(), hard: true);
+            if (!accepted)
+                return CheckResult.Down($"Unexpected status {code}", ms, code.ToString(), hard: true)
+                    with { Diagnostics = Diagnose(resp, body, timings, ms, ttfbMs, cfg.Url) };
 
             if (!string.IsNullOrEmpty(cfg.Keyword))
             {
@@ -86,7 +100,8 @@ public sealed class HttpChecker(IHttpClientFactory httpFactory, ISecretProtector
                 if (present == cfg.KeywordInverted)
                     return CheckResult.Down(
                         cfg.KeywordInverted ? $"Keyword \"{cfg.Keyword}\" present" : $"Keyword \"{cfg.Keyword}\" not found",
-                        ms, code.ToString());
+                        ms, code.ToString())
+                        with { Diagnostics = Diagnose(resp, body, timings, ms, ttfbMs, cfg.Url) };
             }
 
             return CheckResult.Up(ms, code.ToString());
@@ -105,16 +120,171 @@ public sealed class HttpChecker(IHttpClientFactory httpFactory, ISecretProtector
         }
         catch (Exception ex)
         {
-            // ProbeFailure.Describe, not ex.Message. A rejected server certificate arrives here as
-            // "The SSL connection could not be established, see inner exception." — a sentence with no
-            // information in it. The reason is one level down and used to be discarded.
             sw.Stop();
-            return CheckResult.Down(ProbeFailure.Describe(ex), sw.Elapsed.TotalMilliseconds);
+            // The exception overload, not ex.Message: for a TLS failure the outer message is only an
+            // instruction to read the inner one, and for a connection failure the inner SocketException
+            // is what separates "refused" from "timed out". See ProbeFailure.Describe.
+            //
+            // The timings are still worth keeping: a connection that failed after 20 s in the TCP leg
+            // and one that failed instantly at DNS are the same message and completely different faults.
+            return CheckResult.Down(ex, sw.Elapsed.TotalMilliseconds)
+                with { Diagnostics = new CheckDiagnostics { Timings = timings.ToBreakdown(sw.Elapsed.TotalMilliseconds, null) } };
         }
         finally
         {
+            ProbeTimings.End();
             req?.Dispose();
         }
+    }
+
+    /// <summary>
+    /// Assembles the evidence for a failed probe. Never throws: diagnostics are a bonus attached to a
+    /// result that is already decided, and losing them must not turn a reportable failure into an
+    /// exception escaping the checker.
+    /// </summary>
+    private static CheckDiagnostics? Diagnose(
+        HttpResponseMessage resp, string? body, ProbeTimings timings, double totalMs, double ttfbMs,
+        string? requestedUrl)
+    {
+        try
+        {
+            var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var name in CheckDiagnostics.InterestingHeaders)
+            {
+                // Response and content headers are separate collections in .NET; a caller asking for
+                // "location" must not silently miss a "content-type".
+                if (resp.Headers.TryGetValues(name, out var values) ||
+                    resp.Content.Headers.TryGetValues(name, out values))
+                {
+                    headers[name] = Clean(string.Join(", ", values), 200)!;
+                }
+            }
+
+            // Only when redirects actually moved us. Echoing the configured URL back at an operator who
+            // just read it in the same alert is noise, but a monitor that silently followed a redirect
+            // to a login page and called it healthy is a classic invisible outage — worth the line.
+            // Compared as Uris, not strings: "http://example.com" and "http://example.com/" are the
+            // same place, and Uri normalises the configured form the moment the request is built — so a
+            // string comparison reports a redirect on literally every failing check.
+            var landed = resp.RequestMessage?.RequestUri;
+            var moved = landed is not null
+                && (!Uri.TryCreate(requestedUrl, UriKind.Absolute, out var asked) || landed != asked);
+            var finalUrl = moved ? landed!.ToString() : null;
+
+            return new CheckDiagnostics
+            {
+                Timings = timings.ToBreakdown(totalMs, ttfbMs),
+                Headers = headers,
+                BodySnippet = Summarize(body),
+                FinalUrl = finalUrl,
+                HttpVersion = resp.Version.ToString(),
+            };
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Reduces an error page to the sentence it is trying to say: tags dropped, whitespace collapsed,
+    /// then clipped. A Cloudflare 521 page is several kilobytes of markup wrapped around one useful line.
+    /// </summary>
+    private static string? Summarize(string? body)
+    {
+        if (string.IsNullOrWhiteSpace(body)) return null;
+
+        var text = new StringBuilder(Math.Min(body.Length, CheckDiagnostics.MaxBodySnippet * 4));
+        var tagName = new StringBuilder(8);
+
+        var inTag = false;
+        var readingTagName = false;
+        // The contents of <style> and <script> are text nodes, not markup, so tag-stripping alone
+        // leaves them in. Nearly every error page carries inline CSS, and a snippet budget spent on
+        // "body{font-family:sans-serif}" is a budget not spent on what the server was trying to say.
+        var skipDepth = 0;
+
+        foreach (var ch in body)
+        {
+            if (ch == '<')
+            {
+                inTag = true;
+                readingTagName = true;
+                tagName.Clear();
+                continue;
+            }
+
+            if (ch == '>')
+            {
+                inTag = false;
+                readingTagName = false;
+
+                var name = tagName.ToString();
+                if (name.StartsWith('/'))
+                {
+                    if (IsHiddenElement(name[1..]) && skipDepth > 0) skipDepth--;
+                }
+                else if (IsHiddenElement(name))
+                {
+                    skipDepth++;
+                }
+
+                if (skipDepth == 0) text.Append(' ');
+                continue;
+            }
+
+            if (inTag)
+            {
+                // The name ends at the first whitespace; everything after it is attributes.
+                if (readingTagName)
+                {
+                    if (char.IsWhiteSpace(ch)) readingTagName = false;
+                    else if (tagName.Length < 8) tagName.Append(ch);
+                }
+                continue;
+            }
+
+            if (skipDepth == 0) text.Append(ch);
+
+            // Enough raw characters to survive whitespace collapsing without walking a 256 KB body.
+            if (text.Length > CheckDiagnostics.MaxBodySnippet * 4) break;
+        }
+
+        return Clean(text.ToString(), CheckDiagnostics.MaxBodySnippet);
+    }
+
+    /// <summary>Elements whose text content is code rather than prose.</summary>
+    private static bool IsHiddenElement(string name)
+        => name.Equals("style", StringComparison.OrdinalIgnoreCase)
+        || name.Equals("script", StringComparison.OrdinalIgnoreCase)
+        || name.Equals("head", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Collapses all whitespace runs to single spaces and clips to <paramref name="max"/>.</summary>
+    private static string? Clean(string? value, int max)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+
+        var sb = new StringBuilder(Math.Min(value.Length, max + 1));
+        var lastWasSpace = false;
+        foreach (var ch in value)
+        {
+            var isSpace = char.IsWhiteSpace(ch) || char.IsControl(ch);
+            if (isSpace)
+            {
+                if (!lastWasSpace && sb.Length > 0) sb.Append(' ');
+                lastWasSpace = true;
+            }
+            else
+            {
+                sb.Append(ch);
+                lastWasSpace = false;
+            }
+
+            if (sb.Length >= max) break;
+        }
+
+        var cleaned = sb.ToString().TrimEnd();
+        return cleaned.Length == 0 ? null : cleaned;
     }
 
     private HttpRequestMessage BuildRequest(HttpMonitorConfig cfg)

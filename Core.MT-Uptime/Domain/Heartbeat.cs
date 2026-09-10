@@ -19,6 +19,17 @@ public class Heartbeat
     public string? StatusCode { get; set; }
     public string? Message { get; set; }
 
+    /// <summary>
+    /// Serialized <see cref="Monitoring.CheckDiagnostics"/> for a failing check — response headers, a
+    /// body snippet, and where the time went. NULL on every successful beat, which is nearly all of them.
+    /// <para>
+    /// A nullable column on this table rather than a table of its own, deliberately. Heartbeats are
+    /// already pruned in batches by <see cref="Monitoring.RetentionService"/>, so the diagnostics expire
+    /// with the beat they describe and no second retention path has to be written, indexed or remembered.
+    /// </para>
+    /// </summary>
+    public string? Diagnostics { get; set; }
+
     /// <summary>True when this heartbeat marks a state transition (drives the event log and notifications).</summary>
     public bool Important { get; set; }
 

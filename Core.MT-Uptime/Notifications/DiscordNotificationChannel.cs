@@ -30,7 +30,7 @@ public sealed class DiscordNotificationChannel(IHttpClientFactory http, ISecretP
                 new
                 {
                     title = $"{tag}: {evt.MonitorName}",
-                    description = NotificationRenderer.PlainText(evt),
+                    description = NotificationRenderer.PlainText(evt, NotificationRenderer.VerbosityFor(Type)),
                     color = ColourOf(NotificationRenderer.SeverityOf(evt.Kind)),
                 },
             },

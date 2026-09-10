@@ -16,4 +16,11 @@ public sealed record CheckOutcome(
     DateTime? CertExpiresAt,
     EventAction EventAction,
     MonitorStatus FromStatus,
-    MonitorStatus ToStatus);
+    MonitorStatus ToStatus)
+{
+    /// <summary>
+    /// Serialized failure diagnostics for this beat, or null. An init property so the record's shape is
+    /// unchanged for every caller that has nothing to add.
+    /// </summary>
+    public string? Diagnostics { get; init; }
+}

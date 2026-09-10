@@ -36,10 +36,23 @@ public sealed class WebhookNotificationChannel(IHttpClientFactory http, ISecretP
                 startedAt = evt.Incident.StartedAt.ToString("o"),
                 acknowledged = evt.Incident.Acknowledged,
             },
+            // The code from the failing check itself, alongside the plain-language reading of it.
+            // Outside `diagnostics` because these are properties of the event, not of the lookup the
+            // enricher performs, and they are present even when enrichment failed entirely.
+            statusCode = evt.StatusCode,
+            statusCodeMeaning = StatusCodeGloss.For(evt.StatusCode),
+            attempt = evt.Attempt,
+            // BREAKING (see CHANGELOG): `lastStatusCode` was renamed to `lastGoodStatusCode` and its
+            // meaning pinned down. It used to be "the newest heartbeat's code", which raced the
+            // heartbeat writer and so returned either the failure or the state before it depending on
+            // timing. Consumers wanting the failing code should read `statusCode` above.
             diagnostics = evt.Enrichment is null ? null : new
             {
                 resolvedAddress = evt.Enrichment.ResolvedAddress,
-                lastStatusCode = evt.Enrichment.LastStatusCode,
+                lastGoodStatusCode = evt.Enrichment.LastGoodStatusCode,
+                lastGoodResponseTimeMs = evt.Enrichment.LastGoodResponseTimeMs,
+                lastGoodAt = evt.Enrichment.LastGoodAt?.ToString("o"),
+                previousStateSince = evt.Enrichment.PreviousStateSince?.ToString("o"),
                 recentResponseTimesMs = evt.Enrichment.RecentResponseTimesMs,
                 certificateExpiresAt = evt.Enrichment.CertificateExpiresAt?.ToString("o"),
             },

@@ -35,7 +35,9 @@ To reach it from elsewhere, put a reverse proxy in front and terminate TLS there
 ```yaml
 environment:
   # The public address. Password-reset links are built from this rather than from the request's Host
-  # header, which the caller controls. Setting it also narrows AllowedHosts to this hostname.
+  # header, which the caller controls. Setting it also narrows AllowedHosts to this hostname, and is
+  # the origin of the "Full diagnostics" link in alerts to ntfy/Telegram/Gotify. Unset, those alerts
+  # carry no link rather than a guessed one.
   App__PublicBaseUrl: "https://uptime.example.com"
 
   # Only needed when the proxy is NOT on loopback — nginx in another container, or a load balancer.

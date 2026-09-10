@@ -117,7 +117,9 @@ public sealed class MonitorRunner
             }
             catch (Exception ex)
             {
-                result = CheckResult.Down(ProbeFailure.Describe(ex));
+                // Unwrapped, like the checkers' own catch blocks: a checker that throws past its own
+                // handling is exactly the case where the outer message is least likely to be the useful one.
+                result = CheckResult.Down(ex);
             }
 
             Process(result);
@@ -135,16 +137,31 @@ public sealed class MonitorRunner
         var slow = MonitorCadence.IsSlow(result.ResponseTimeMs, _slowThresholdMs);
         var d = _machine.Evaluate(result.Status, result.Hard, slow);
 
+        // Serialized once and reused: the heartbeat row is what the incident page reads later, and the
+        // live object is what this alert renders now. Neither should pay for the other.
+        var diagnostics = result.Diagnostics;
+
         _writer.Enqueue(new CheckOutcome(
             _monitor.Id, now, d.HeartbeatStatus, result.ResponseTimeMs, result.StatusCode, result.Message,
-            d.Important, d.Attempt, result.CertExpiresAt, d.EventAction, d.PreviousConfirmed, d.NewConfirmed));
+            d.Important, d.Attempt, result.CertExpiresAt, d.EventAction, d.PreviousConfirmed, d.NewConfirmed)
+        {
+            Diagnostics = diagnostics?.ToJson(),
+        });
 
         _state.ApplyResult(_monitor.Id, d.HeartbeatStatus, now, result.ResponseTimeMs, result.Message, result.CertExpiresAt);
 
         if (d.Notify != NotifyKind.None)
         {
             _dispatcher.Enqueue(new NotificationEvent(
-                _monitor.Id, _monitor.Name, d.NewConfirmed, d.PreviousConfirmed, now, result.Message, result.ResponseTimeMs, d.Notify));
+                _monitor.Id, _monitor.Name, d.NewConfirmed, d.PreviousConfirmed, now, result.Message, result.ResponseTimeMs, d.Notify)
+            {
+                // Carried from the failing check itself. The enricher reads the heartbeat table at
+                // dispatch, by which time this beat may not have been flushed — so the code that caused
+                // the alert has to travel with the event rather than be looked up later.
+                StatusCode = result.StatusCode,
+                Attempt = d.Attempt,
+                Diagnostics = diagnostics,
+            });
         }
     }
 }
