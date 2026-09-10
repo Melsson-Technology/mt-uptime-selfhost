@@ -317,7 +317,28 @@ EOF
     # DPkg::Lock::Timeout rather than failing on contention: unattended-upgrades runs on a fresh
     # cloud image and holds the dpkg lock for a minute or two. Without this, the script dies with
     # "Could not get lock" on a box that is perfectly fine and would have been ready shortly.
-    apt-get install -y -qq -o DPkg::Lock::Timeout=600 \
+    # ── /etc/default/dnsmasq is a dpkg CONFFILE, and it is written above on purpose ──────────────
+    #
+    # Writing it before the package is installed is deliberate, and the long comment above explains
+    # why: it is the only way dnsmasq's very first start reads CONFIG_DIR. The consequence is that
+    # dpkg then finds a conffile "created by you or by a script" which differs from the maintainer's,
+    # and stops to ask which one to keep:
+    #
+    #     Configuration file '/etc/default/dnsmasq'
+    #      ==> File on system created by you or by a script.
+    #     *** dnsmasq (Y/I/N/O/D/Z) [default=N] ?
+    #
+    # On a terminal that is a prompt nothing warned you about. With no terminal — ssh running this
+    # script from a pipe, CI, any unattended run — stdin is at EOF, dpkg dies with "end of file on
+    # stdin at conffile prompt", and dnsmasq is left half-installed: state `iU`, postinst never ran,
+    # no unit, and nothing in its journal to say why. Every DNS row of the self-check then fails for
+    # a reason nowhere near the real one. Found on 2026-09-10, running this battery over ssh.
+    #
+    # --force-confold answers it the way this script already needs it answered: keep ours, because
+    # ours is the copy with CONFIG_DIR in it. It is a no-op for the other packages listed here,
+    # which are fresh installs with no prior conffiles to preserve.
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -o DPkg::Lock::Timeout=600 \
+        -o Dpkg::Options::=--force-confold \
         nginx dnsmasq mysql-server postgresql nftables \
         openssl python3 sqlite3 curl jq \
         bind9-dnsutils mysql-client postgresql-client

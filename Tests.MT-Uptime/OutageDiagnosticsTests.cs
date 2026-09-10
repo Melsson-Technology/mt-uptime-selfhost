@@ -73,6 +73,52 @@ public class OutageDiagnosticsTests
         Assert.DoesNotContain("font-family", d.BodySnippet);
     }
 
+    /// <summary>
+    /// A real <c>Server</c> header, not a one-word stand-in.
+    /// <para>
+    /// The typed header collections parse structured headers before handing them over, and
+    /// <c>Server</c> is a product list — so <c>nginx/1.24.0 (Ubuntu)</c> came back as two elements and
+    /// was rejoined as <c>"nginx/1.24.0, (Ubuntu)"</c>, inserting a comma the origin never sent into
+    /// the one field whose whole job is to say what the server is. Reading
+    /// <c>Headers.NonValidated</c> keeps the line as it arrived.
+    /// </para>
+    /// <para>
+    /// Every other test here used <c>server: cloudflare</c>, a single token that cannot split, which is
+    /// why this survived to a real box. The E2E battery caught it on 2026-09-10 against real nginx.
+    /// </para>
+    /// </summary>
+    [Theory]
+    [InlineData("nginx/1.24.0 (Ubuntu)")]
+    [InlineData("Apache/2.4.58 (Debian) OpenSSL/3.0.11")]
+    [InlineData("Microsoft-IIS/10.0")]
+    [InlineData("cloudflare")]
+    public async Task A_structured_server_header_is_kept_exactly_as_the_origin_sent_it(string server)
+    {
+        var r = await RunAsync(Cfg(), HttpStatusCode.OK, status: 503, body: "down",
+            headers: new() { ["server"] = server });
+
+        var d = Assert.IsType<CheckDiagnostics>(r.Diagnostics);
+
+        Assert.Equal(server, d.Headers["server"]);
+        Assert.DoesNotContain(", (", d.Headers["server"]);
+    }
+
+    /// <summary>
+    /// A header genuinely sent twice still joins with ", ", which is what RFC 9110 says repeated
+    /// field lines mean. The fix above must not turn a real list into only its first element.
+    /// </summary>
+    [Fact]
+    public async Task A_header_sent_twice_keeps_both_values()
+    {
+        var r = await RunAsync(Cfg(), HttpStatusCode.OK, status: 503, body: "down",
+            headers: new() { ["via"] = "1.1 edge-a" }, repeatedHeaders: new() { ["via"] = "1.1 edge-b" });
+
+        var d = Assert.IsType<CheckDiagnostics>(r.Diagnostics);
+
+        Assert.Contains("edge-a", d.Headers["via"]);
+        Assert.Contains("edge-b", d.Headers["via"]);
+    }
+
     [Fact]
     public async Task A_healthy_check_gathers_nothing_and_never_reads_the_body()
     {
@@ -316,10 +362,11 @@ public class OutageDiagnosticsTests
         int? status = null,
         string body = "",
         Dictionary<string, string>? headers = null,
+        Dictionary<string, string>? repeatedHeaders = null,
         string? finalUrl = null,
         HttpContent? content = null)
     {
-        var handler = new HeaderStubHandler(status ?? (int)statusCode, body, headers, finalUrl, content);
+        var handler = new HeaderStubHandler(status ?? (int)statusCode, body, headers, repeatedHeaders, finalUrl, content);
         var checker = new HttpChecker(new StubFactory(handler), new Passthrough());
         var ctx = new MonitorContext(1, "test", MonitorType.Http, TimeSpan.FromSeconds(5), JsonSerializer.Serialize(cfg));
         return await checker.CheckAsync(ctx, CancellationToken.None);
@@ -327,7 +374,8 @@ public class OutageDiagnosticsTests
 
     /// <summary>A canned response that can carry arbitrary headers and a chosen final URL.</summary>
     private sealed class HeaderStubHandler(
-        int status, string body, Dictionary<string, string>? headers, string? finalUrl, HttpContent? content)
+        int status, string body, Dictionary<string, string>? headers,
+        Dictionary<string, string>? repeatedHeaders, string? finalUrl, HttpContent? content)
         : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
@@ -343,6 +391,10 @@ public class OutageDiagnosticsTests
             };
 
             foreach (var (name, value) in headers ?? [])
+                resp.Headers.TryAddWithoutValidation(name, value);
+
+            // A second field line with the same name, which is what a genuinely repeated header is.
+            foreach (var (name, value) in repeatedHeaders ?? [])
                 resp.Headers.TryAddWithoutValidation(name, value);
 
             return Task.FromResult(resp);
