@@ -59,6 +59,7 @@ public sealed class HeartbeatWriter(
             ResponseTimeMs = o.ResponseTimeMs,
             StatusCode = o.StatusCode,
             Message = o.Message,
+            Diagnostics = o.Diagnostics,
             Important = o.Important,
             Attempt = o.Attempt,
             Maintenance = inMaintenance,

@@ -25,7 +25,7 @@ public sealed class SlackNotificationChannel(IHttpClientFactory http, ISecretPro
             AlertSeverity.Warning => ":large_orange_circle:",
             _ => ":information_source:",
         };
-        var text = $"{emoji} *{tag}: {evt.MonitorName}*\n{NotificationRenderer.PlainText(evt)}";
+        var text = $"{emoji} *{tag}: {evt.MonitorName}*\n{NotificationRenderer.PlainText(evt, NotificationRenderer.VerbosityFor(Type))}";
 
         var resp = await Http.PostAsJsonAsync(url, new { text }, ct);
         return resp.IsSuccessStatusCode;

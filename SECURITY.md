@@ -55,6 +55,29 @@ install this is exactly the intent: you are monitoring your own private infrastr
 policy, an egress proxy, or a blocklist for private and link-local ranges. The application does not do
 this for you, because for its intended use it would be wrong to.
 
+### A failing check quotes the target back at you
+
+When an HTTP check fails, MT-Uptime keeps some of what the target said: an **allowlist** of response
+headers (`server`, `cf-ray`, `via`, `x-cache`, `retry-after`, `location`, `cf-cache-status`,
+`x-request-id`), and a tag-stripped snippet of the response body. That text is then stored on the
+heartbeat and rendered into outbound alerts — so it reaches your email, your Slack and your webhook
+consumers.
+
+Three properties are deliberate, and worth attacking if you think they do not hold:
+
+- **It is an allowlist, not a filter.** A header that is not on that list is never read, so a
+  `set-cookie` or an internal routing header cannot be persisted or emailed by a target that decides to
+  send one. Widening the list is a disclosure decision, not a formatting one.
+- **It is bounded on capture.** The body snippet is clipped, and every check message is capped by
+  `CheckResult.MaxMessageLength`. This is not about disk. Telegram, Discord and Slack all reject an
+  oversized payload, so a target that could inflate this text would be able to **suppress the alert
+  about its own outage** — the failure a monitoring system least wants.
+- **It is escaped where it is rendered.** The snippet reaches an HTML email and a Blazor page, both of
+  which encode it. A body snippet that executes anywhere is a vulnerability; please report it.
+
+Note the *content* is untrusted by definition — it is written by the host you are monitoring, often the
+one whose operator would rather you were not. Treat a quoted error page as a clue, not as a fact.
+
 ### The push endpoint is anonymous by design
 
 `/ping/{token}` accepts unauthenticated `GET`, `POST` and `HEAD`. The 128-bit random token in the URL

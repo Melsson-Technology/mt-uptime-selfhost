@@ -42,6 +42,17 @@ public sealed class EngineOptions
     public int IncidentCorrelationWindowMinutes { get; set; } = 10;
 
     /// <summary>
+    /// The instance's public origin, e.g. <c>https://uptime.example.com</c>, used to build the
+    /// "full diagnostics" link in alerts sent to channels too small to carry the detail inline.
+    /// <para>
+    /// Bound by the host from the same <c>App:PublicBaseUrl</c> setting that emailed links use, rather
+    /// than from a second key, so an operator configures the origin once. Null or unset simply means
+    /// those alerts carry no link — never a broken one built from a guess.
+    /// </para>
+    /// </summary>
+    public string? PublicBaseUrl { get; set; }
+
+    /// <summary>
     /// Whether <see cref="RetentionService"/>'s daily timer runs in this process. Default true, which is
     /// right for any install that owns its own database.
     /// <para>

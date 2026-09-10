@@ -50,12 +50,21 @@ case — this is the property that matters most, and it is the one you cannot ad
 - **Retry windows.** A single failed check doesn't page you. Configure how many consecutive failures
   confirm an outage. A definitive negative (a bad HTTP status) skips the wait, because retrying won't
   change the answer.
+- **Alerts that say what broke, not just that something did.** A bare `Unexpected status 521` is a
+  homework assignment at 3am — 521 isn't even a standard HTTP code, it's Cloudflare's, and it means the
+  CDN is fine and *your origin refused the connection*. So the alert says that. A failing check also
+  keeps the evidence it collected on the way past: the `cf-ray` your CDN's support desk will ask for,
+  what the error page actually said, and a timing breakdown splitting the total into DNS, TCP connect,
+  TLS handshake and time-to-first-byte — so a 21-second response tells you *which* 21 seconds. A healthy
+  check gathers none of it and never reads the body; this costs nothing when nothing is wrong.
 - **Tags and dashboard filtering.** Label monitors by environment, customer or host and filter to them
   in one click. The list stops being readable somewhere past thirty monitors without this.
 - **Public status pages** at `/status/{slug}`, with 30-day uptime per monitor.
 - **Notifications** to email (SendGrid), Slack, Discord, Microsoft Teams, Telegram, ntfy, Gotify,
   PagerDuty or a generic webhook — globally or per monitor. PagerDuty gets real incident semantics: a
-  recovery *resolves* the incident instead of paging someone about a service that's already back.
+  recovery *resolves* the incident instead of paging someone about a service that's already back. Each
+  alert is sized to where it's going: the channels with room carry the full diagnostics inline, while
+  the ones you read on a lock screen get the one-line diagnosis and a link to the rest.
 - **History that survives pruning.** Raw heartbeats are rolled into hourly and daily buckets before
   they're deleted, so long-range uptime percentages stay accurate on a small disk.
 - **Live dashboard.** Status updates push to the browser over the existing Blazor circuit — no polling,

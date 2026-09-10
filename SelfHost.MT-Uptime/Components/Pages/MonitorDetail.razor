@@ -134,6 +134,51 @@ else
         </section>
     }
 
+    @* The destination of the "Full diagnostics" link in alerts sent to push channels, which cannot
+       carry this inline. Shows the most recent failure we have evidence for, which is normally the one
+       the reader was just paged about. *@
+    @if (LastFailureDiagnostics is { } diag)
+    {
+        <section class="panel">
+            <h2>Last failure diagnostics</h2>
+            <p class="muted">Captured @Humanize(DateTime.UtcNow - diag.At) ago@(diag.Code is null ? "" : $" — status {diag.Code}").</p>
+            <dl class="diagnostics">
+                @if (diag.Data.Timings is { } t)
+                {
+                    <dt>Where the time went</dt>
+                    <dd>
+                        @if (t.DnsMs is { } dns) { <span>DNS @dns.ToString("N0") ms</span> }
+                        @if (t.ConnectMs is { } conn) { <span>connect @conn.ToString("N0") ms</span> }
+                        @if (t.TlsMs is { } tls) { <span>TLS @tls.ToString("N0") ms</span> }
+                        @if (t.TimeToFirstByteMs is { } ttfb) { <span>first byte @ttfb.ToString("N0") ms</span> }
+                        <span>total @t.TotalMs.ToString("N0") ms</span>
+                        @if (t.ConnectionReused) { <span class="muted">(connection reused)</span> }
+                    </dd>
+                }
+                @foreach (var (name, value) in diag.Data.Headers)
+                {
+                    <dt>@name</dt>
+                    <dd>@value</dd>
+                }
+                @if (!string.IsNullOrWhiteSpace(diag.Data.FinalUrl))
+                {
+                    <dt>Final URL</dt>
+                    <dd>@diag.Data.FinalUrl</dd>
+                }
+                @if (!string.IsNullOrWhiteSpace(diag.Data.HttpVersion))
+                {
+                    <dt>HTTP version</dt>
+                    <dd>@diag.Data.HttpVersion</dd>
+                }
+                @if (!string.IsNullOrWhiteSpace(diag.Data.BodySnippet))
+                {
+                    <dt>Response body</dt>
+                    <dd>@diag.Data.BodySnippet</dd>
+                }
+            </dl>
+        </section>
+    }
+
     <section class="panel">
         <h2>Events</h2>
         @if (_events.Count == 0)
@@ -341,6 +386,27 @@ else
     }
 
     private static string TypeLabel(MonitorType t) => t == MonitorType.Push ? "Heartbeat" : t.ToString();
+
+    /// <summary>
+    /// The newest heartbeat in the loaded window that carried failure diagnostics, decoded.
+    /// <para>
+    /// Only failing checks write the column, so this skips past the healthy beats without a query of
+    /// its own — <c>_beats</c> is already loaded in full. A row written by a different build simply
+    /// decodes to null and the panel does not render, rather than breaking the page.
+    /// </para>
+    /// </summary>
+    private (DateTime At, string? Code, CheckDiagnostics Data)? LastFailureDiagnostics
+    {
+        get
+        {
+            for (var i = _beats.Count - 1; i >= 0; i--)
+            {
+                if (CheckDiagnostics.FromJson(_beats[i].Diagnostics) is { } data)
+                    return (_beats[i].Timestamp, _beats[i].StatusCode, data);
+            }
+            return null;
+        }
+    }
 
     private static T? TryDeserialize<T>(string json) where T : class
     {

@@ -1,3 +1,4 @@
+using System.Net.Sockets;
 using System.Security.Authentication;
 using System.Security.Cryptography;
 using MT.Uptime.Core.Monitoring;
@@ -26,7 +27,7 @@ public class ProbeFailureTests
                 "The remote certificate is invalid because of errors in the certificate chain."));
 
         Assert.Equal(
-            "The SSL connection could not be established, see inner exception. — "
+            "The SSL connection could not be established, see inner exception. → "
             + "The remote certificate is invalid because of errors in the certificate chain.",
             ProbeFailure.Describe(ex));
     }
@@ -38,7 +39,7 @@ public class ProbeFailureTests
             new AuthenticationException("middle",
                 new CryptographicException("inner")));
 
-        Assert.Equal("outer — middle — inner", ProbeFailure.Describe(ex));
+        Assert.Equal("outer → middle → inner", ProbeFailure.Describe(ex));
     }
 
     [Fact]
@@ -54,7 +55,7 @@ public class ProbeFailureTests
 
         var text = ProbeFailure.Describe(ex);
 
-        Assert.Equal("one — two — three — four", text);
+        Assert.Equal("one → two → three → four", text);
         Assert.DoesNotContain("five", text);
     }
 
@@ -62,7 +63,7 @@ public class ProbeFailureTests
     public void A_repeated_message_is_said_once()
     {
         // Several database drivers wrap their inner exception and re-use its message verbatim.
-        // "X — X" reads like a bug in the monitoring tool rather than a fault in the target.
+        // "X → X" reads like a bug in the monitoring tool rather than a fault in the target.
         var ex = new Exception("SSL Authentication Error", new Exception("SSL Authentication Error"));
 
         Assert.Equal("SSL Authentication Error", ProbeFailure.Describe(ex));
@@ -83,7 +84,7 @@ public class ProbeFailureTests
         // more, and dropping it would discard the only useful half.
         var ex = new Exception("timeout", new Exception("timeout after 30s awaiting the TLS handshake"));
 
-        Assert.Equal("timeout — timeout after 30s awaiting the TLS handshake", ProbeFailure.Describe(ex));
+        Assert.Equal("timeout → timeout after 30s awaiting the TLS handshake", ProbeFailure.Describe(ex));
     }
 
     [Theory]
@@ -93,7 +94,7 @@ public class ProbeFailureTests
     {
         var ex = new Exception("outer", new Exception(blank, new Exception("the actual reason")));
 
-        Assert.Equal("outer — the actual reason", ProbeFailure.Describe(ex));
+        Assert.Equal("outer → the actual reason", ProbeFailure.Describe(ex));
     }
 
     [Fact]
@@ -108,6 +109,59 @@ public class ProbeFailureTests
         var text = ProbeFailure.Describe(new BlankException());
 
         Assert.Equal(nameof(BlankException), text);
+    }
+
+    /// <summary>
+    /// The outer <c>HttpRequestException</c> is generic; the inner <c>SocketException</c> is what
+    /// separates "the origin refused us" from "the origin hung" from "the name does not resolve".
+    /// Behind a CDN that distinction is most of the diagnosis.
+    /// </summary>
+    [Theory]
+    [InlineData(SocketError.ConnectionRefused)]
+    [InlineData(SocketError.TimedOut)]
+    [InlineData(SocketError.HostNotFound)]
+    public void A_connection_failure_keeps_the_socket_level_reason(SocketError error)
+    {
+        var inner = new SocketException((int)error);
+        var described = ProbeFailure.Describe(new HttpRequestException("Connection failure", inner));
+
+        Assert.Contains("Connection failure", described);
+        Assert.Contains(inner.Message, described);
+    }
+
+    [Fact]
+    public void An_aggregate_exception_reports_its_contents_rather_than_its_boilerplate()
+    {
+        var described = ProbeFailure.Describe(
+            new AggregateException(new SocketException((int)SocketError.ConnectionRefused)));
+
+        Assert.DoesNotContain("One or more errors", described);
+        Assert.Contains("refused", described, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void An_aggregate_holding_only_empty_aggregates_still_names_something()
+    {
+        // Flatten() can yield no leaves at all, which is why taking InnerExceptions[0] is guarded.
+        var described = ProbeFailure.Describe(new AggregateException(new AggregateException()));
+
+        Assert.False(string.IsNullOrWhiteSpace(described));
+    }
+
+    [Fact]
+    public void A_pathological_chain_stays_inside_the_message_cap()
+    {
+        // 20 deep, but only the first few are worth reading — and the result must stay well inside
+        // CheckResult.MaxMessageLength, which exists so a hostile target cannot inflate an alert past
+        // a channel's payload limit and suppress the notification about its own outage.
+        Exception ex = new InvalidOperationException("level-19");
+        for (var i = 18; i >= 0; i--) ex = new InvalidOperationException($"level-{i}", ex);
+
+        var described = ProbeFailure.Describe(ex);
+
+        Assert.Contains("level-0", described);
+        Assert.DoesNotContain("level-19", described);
+        Assert.True(described.Length <= CheckResult.MaxMessageLength);
     }
 
     private sealed class BlankException : Exception
