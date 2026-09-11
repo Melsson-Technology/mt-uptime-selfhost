@@ -64,10 +64,7 @@ public static class ServiceCollectionExtensions
         // RedactingHttpClientLogger, which keeps host, status and timing but drops path and query.
         // AddLogger<T> resolves T from the container rather than constructing it, so it must be
         // registered or the client fails to build the first time a notification is sent.
-        services.TryAddSingleton<RedactingHttpClientLogger>();
-        services.AddHttpClient(WebhookChannelBase.HttpClientName, c => c.Timeout = TimeSpan.FromSeconds(15))
-            .RemoveAllLoggers()
-            .AddLogger<RedactingHttpClientLogger>();
+        services.AddNotificationHttpClient();
         services.AddSingleton<NotificationDispatcher>();
         services.AddHostedService(sp => sp.GetRequiredService<NotificationDispatcher>());
 
@@ -193,4 +190,30 @@ public static class ServiceCollectionExtensions
     /// <summary>Applies the shared monitor User-Agent to a named HttpChecker client.</summary>
     private static void ConfigureMonitorClient(HttpClient client)
         => client.DefaultRequestHeaders.UserAgent.ParseAdd(HttpChecker.UserAgent);
+
+    /// <summary>
+    /// Registers the HTTP client every outbound notification uses — alert email, and each webhook
+    /// channel — together with the logger that keeps credentials out of the journal.
+    /// <para>
+    /// Public because a second host needs it. The portal is not the monitoring engine and must not call
+    /// <see cref="AddMonitoringEngine"/>, but it does send mail through the same SendGrid path, and
+    /// without this its deliveries would be invisible exactly as the engine's were until 2026-09-11.
+    /// The alternative was a second copy of <c>RedactingHttpClientLogger</c> in <c>saas/</c>, which is a
+    /// security-sensitive class whose whole job is to not drift.
+    /// </para>
+    /// <para>
+    /// <c>RemoveAllLoggers</c> is load-bearing, not tidying: the default logging writes the full request
+    /// URI at Information level, and for Slack/Telegram/webhook channels that URI <em>is</em> the
+    /// credential. <c>AddLogger&lt;T&gt;</c> resolves T from the container rather than constructing it,
+    /// so the logger must be registered or the client fails to build on first use.
+    /// </para>
+    /// </summary>
+    public static IServiceCollection AddNotificationHttpClient(this IServiceCollection services)
+    {
+        services.TryAddSingleton<RedactingHttpClientLogger>();
+        services.AddHttpClient(WebhookChannelBase.HttpClientName, c => c.Timeout = TimeSpan.FromSeconds(15))
+            .RemoveAllLoggers()
+            .AddLogger<RedactingHttpClientLogger>();
+        return services;
+    }
 }
