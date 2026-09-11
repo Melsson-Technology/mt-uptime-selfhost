@@ -20,6 +20,16 @@ versioning will follow [Semantic Versioning](https://semver.org/) from 1.0.0 onw
   pairing and compares row counts against the running instance, touching nothing. The installer will not
   arm the timer until a rehearsal has passed.
 
+- **A log line when an alert email is accepted by SendGrid.** Only failures were logged before, so a
+  quiet journal meant either "the alert email went out" or "nothing was ever attempted" and there was no
+  way to tell those apart — which is the first question anyone asks after an incident. Slack posts were
+  already traced; email was not, because the SendGrid client is built internally and never passes through
+  the logger that redacts webhook URLs.
+
+  The line records the monitor, the status code and how long the call took. It says **accepted**, not
+  delivered: SendGrid answers 202 once it has queued the message, and what follows is between SendGrid and
+  the recipient's mail server. The recipient address is deliberately not logged.
+
 ### Changed
 
 - **The interface now carries MT-Uptime's own mark rather than the Melsson Technology gear.** A clock
