@@ -21,7 +21,10 @@ public interface IEmailSender
 }
 
 /// <inheritdoc cref="IEmailSender"/>
-public sealed class EmailSender(ISettingsService settings, ILogger<EmailSender> log) : IEmailSender
+public sealed class EmailSender(
+    IHttpClientFactory httpFactory,
+    ISettingsService settings,
+    ILogger<EmailSender> log) : IEmailSender
 {
     public async Task<bool> IsConfiguredAsync(CancellationToken ct = default)
     {
@@ -49,7 +52,10 @@ public sealed class EmailSender(ISettingsService settings, ILogger<EmailSender> 
 
         try
         {
-            var client = new SendGridClient(cfg.ApiKey);
+            // Injected for the same reasons as SendGridNotificationChannel: the SDK would otherwise
+            // build its own client, which bypasses RedactingHttpClientLogger and leaves a password
+            // reset with no trace at all. A client per send, from the pooled factory.
+            var client = new SendGridClient(httpFactory.CreateClient(WebhookChannelBase.HttpClientName), cfg.ApiKey);
             var from = new EmailAddress(cfg.FromEmail, string.IsNullOrWhiteSpace(cfg.FromName) ? "MT-Uptime" : cfg.FromName);
             var msg = MailHelper.CreateSingleEmail(from, new EmailAddress(toEmail), subject, plainText, html);
 
