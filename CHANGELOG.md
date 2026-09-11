@@ -37,6 +37,13 @@ versioning will follow [Semantic Versioning](https://semver.org/) from 1.0.0 onw
   `MaximumNumberOfRetries` to 0, so nothing was retrying before. It also makes the send testable without
   a network call, which is why this path finally has tests.
 
+- **`AddNotificationHttpClient()` is now public.** The registration for the HTTP client every outbound
+  notification uses — and, more to the point, the logger that keeps webhook credentials out of the
+  journal — was buried inside `AddMonitoringEngine()`. A host that sends mail but runs no monitors had
+  no way to get it without taking the whole engine, and the alternative was a second copy of a
+  security-sensitive class whose entire job is to not drift. `AddMonitoringEngine()` now calls it, so
+  existing hosts need no change.
+
 ### Changed
 
 - **The interface now carries MT-Uptime's own mark rather than the Melsson Technology gear.** A clock
