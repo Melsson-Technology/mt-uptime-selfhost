@@ -30,6 +30,13 @@ versioning will follow [Semantic Versioning](https://semver.org/) from 1.0.0 onw
   delivered: SendGrid answers 202 once it has queued the message, and what follows is between SendGrid and
   the recipient's mail server. The recipient address is deliberately not logged.
 
+  The underlying cause is fixed too: the SendGrid client is now built from the application's own
+  `IHttpClientFactory` rather than by the SDK. Email requests therefore pass through the same logger as
+  every other channel — host, status and timing, never headers — so the transport is visible as well as
+  the outcome. This removes no retry behaviour: SendGrid's `ReliabilitySettings` default
+  `MaximumNumberOfRetries` to 0, so nothing was retrying before. It also makes the send testable without
+  a network call, which is why this path finally has tests.
+
 ### Changed
 
 - **The interface now carries MT-Uptime's own mark rather than the Melsson Technology gear.** A clock
