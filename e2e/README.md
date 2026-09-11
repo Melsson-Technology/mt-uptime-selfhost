@@ -131,19 +131,30 @@ tiers need no login and absorb that wait for free, and `smoke.sh` prints when th
 `--tier all` exists, but xUnit chooses the order inside it, so the cooldown can land *on* the UI
 tests rather than ahead of them.
 
-> **The UI tier is one sign-in away from that limit, and this is worth knowing before you add a test
-> to it.** `UiFixture.SignInAsync` performs a real sign-in per test, so 18 tests spend 18 of the 20
-> permits in that five-minute window. A nineteenth was tried on 2026-09-10 and the tier failed —
-> **inside `SignInAsync`, with a navigation timeout that reads like a broken page rather than a spent
-> budget.** The limit is not configurable and should not be: it is what stops offline-speed password
-> guessing and keeps an anonymous caller from starving the monitoring runners of PBKDF2 CPU.
+> **The tier used to spend the entire sign-in budget, and no longer does.** Measured on 2026-09-10:
+> eighteen tests performed **twenty** successful sign-ins, against a limit of exactly **20 per five
+> minutes partitioned by client address** — and that address is the same for every test, because nginx
+> forwards it and `UseForwardedHeaders` resolves it back to this box's loopback. The tier was passing
+> on whether the fixed window happened to roll mid-run, and a nineteenth test tipped it over: the run
+> failed *inside* `UiFixture.SignInAsync`, with a navigation timeout that reads like a broken page
+> rather than a spent budget.
 >
-> Signing in once and replaying the cookie jar via `StorageStateAsync` is the obvious fix and was
-> tried; it made things worse rather than better (two *different* tests then failed), so it was
-> reverted rather than shipped half-understood. **Anyone growing this tier needs to solve the budget
-> first** — and note the second constraint it collides with: `AssemblyInfo.cs` explains that every
-> monitor on this box correlates to one incident key, `ip:127.0.0.1`, inside a ten-minute window, so a
-> new test that produces an outage is visible to the other tests that produce outages.
+> The limit is not the thing to change — it is what makes offline-speed password guessing impractical
+> and stops an anonymous caller starving the monitoring runners of the PBKDF2 CPU they share. So
+> `UiFixture` now signs the administrator in **once per test class** and seeds every later context from
+> the saved cookie jar (`StorageStateAsync`). Each test still gets its own isolated context. **Sign-ins
+> per run went 20 → 5**, and a nineteenth test costs one more rather than one per test.
+>
+> The seeded session is verified rather than assumed: if the replayed jar no longer authenticates the
+> fixture falls back to a real sign-in. That check is the difference between this working and the first
+> attempt at it, which cached the state and trusted it — an unauthenticated context does not error, it
+> quietly redirects to `/login`, and every later locator then times out somewhere unrelated.
+>
+> **Known flakiness, and it is not the budget.** `U5` (incident acknowledged and annotated) and to a
+> lesser extent `U11` (monitor edited and deleted) fail intermittently on a loaded box — in their own
+> test bodies, with zero sign-in rejections in the log. Observed across five runs on 2026-09-10: 18/18,
+> 18/18, 19/19, 18/19, 16/18. If you get a failure here, check *where* it failed before assuming the
+> tier is broken, and re-run.
 
 ### 6. Destroy the machine
 

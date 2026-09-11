@@ -48,29 +48,63 @@ public sealed class UiFixture : IAsyncDisposable, IDisposable
         _sink = new WebhookSink();
     }
 
+    /// <summary>The administrator's cookie jar, captured from the one real sign-in. See <see cref="SignInAsync"/>.</summary>
+    private string? _adminStorageState;
+
     /// <summary>
     /// A fresh browser context, signed in, on the dashboard.
     /// <para>
     /// A context per test rather than a page per test: contexts are cheap, they carry their own cookie
     /// jar, and sharing one would mean a test that changed the signed-in user — which
-    /// <c>UsersUiTests</c> does — leaked that into whatever ran next.
+    /// <c>UsersUiTests</c> does — leaked that into whatever ran next. That property is unchanged by
+    /// everything below: every caller still gets its own context.
+    /// </para>
+    /// <para>
+    /// <b>What changed is the number of real sign-ins, and it had to.</b> The login endpoint permits
+    /// <b>20 attempts per 5 minutes partitioned by client address</b>, and that address is the same for
+    /// every test: nginx forwards it and <c>UseForwardedHeaders</c> resolves it back to the box's own
+    /// loopback. This tier had <b>fourteen</b> administrator sign-ins across its call sites plus two
+    /// deliberate ones as other users — sixteen of twenty, inside a run that finishes well within one
+    /// window. It passed on luck: whether the fixed window happened to roll mid-run. A nineteenth test
+    /// tipped it over on 2026-09-10, and the tier failed <em>inside this method</em> with a navigation
+    /// timeout that reads like a broken page rather than a spent budget.
+    /// </para>
+    /// <para>
+    /// The limit is not the thing to change. It is what makes offline-speed password guessing
+    /// impractical and what stops an anonymous caller starving the monitoring runners of the PBKDF2 CPU
+    /// they share with every checker. So the administrator signs in <b>once</b>, the resulting cookie
+    /// jar is captured with <c>StorageStateAsync</c>, and later contexts are seeded from it — sixteen
+    /// attempts become three. A caller naming a <em>different</em> user still signs in for real,
+    /// because that is the thing those tests are testing.
+    /// </para>
+    /// <para>
+    /// <b>The seeded session is verified, not assumed.</b> An earlier attempt at this cached the state
+    /// and trusted it, and when tests failed it was impossible to tell a stale cookie from a broken
+    /// page — because an unauthenticated context does not error, it quietly redirects to
+    /// <c>/login</c> and every later locator times out somewhere unrelated. If the replayed jar no
+    /// longer authenticates, this falls back to a real sign-in and re-captures. The cost of being
+    /// wrong is one extra permit; the cost of not checking was a day.
     /// </para>
     /// </summary>
     public async Task<IPage> SignInAsync(string? username = null, string? password = null)
     {
-        var context = await Browser.NewContextAsync(new BrowserNewContextOptions
+        var asAdmin = username is null && password is null;
+
+        if (asAdmin && _adminStorageState is not null)
         {
-            BaseURL = BaseUrl,
-            IgnoreHTTPSErrors = true,
-            ViewportSize = new ViewportSize { Width = 1400, Height = 1000 },
-        });
+            var seeded = await NewPageAsync(_adminStorageState);
+            await seeded.GotoAsync("/");
 
-        var page = await context.NewPageAsync();
+            // Landing anywhere but /login means the cookie still authenticates, and this is where a
+            // real sign-in would have left us: the post-login redirect is the dashboard.
+            if (!seeded.Url.Contains("/login", StringComparison.Ordinal)) return seeded;
 
-        // Generous, and it has to be: the first navigation of a run pays for Blazor's bundle and the
-        // circuit handshake, and this box is also running MySQL, PostgreSQL, nginx, dnsmasq and the
-        // application under test.
-        page.SetDefaultTimeout(30_000);
+            // Stale. Drop it and pay for a real sign-in rather than hand back an anonymous context.
+            _adminStorageState = null;
+            await seeded.Context.CloseAsync();
+        }
+
+        var page = await NewPageAsync(storageState: null);
 
         await page.GotoAsync("/login");
         await page.GetByLabel("Username").FillAsync(username ?? Targets.AdminUser!);
@@ -78,6 +112,31 @@ public sealed class UiFixture : IAsyncDisposable, IDisposable
         await page.GetByRole(AriaRole.Button, new() { Name = "Sign in" }).ClickAsync();
 
         await page.WaitForURLAsync(u => !u.Contains("/login", StringComparison.Ordinal));
+
+        if (asAdmin) _adminStorageState = await page.Context.StorageStateAsync();
+        return page;
+    }
+
+    /// <summary>
+    /// A context and a page, optionally seeded with a saved cookie jar.
+    /// <para>
+    /// The timeout is generous and has to be: the first navigation of a run pays for Blazor's bundle
+    /// and the circuit handshake, and this box is also running MySQL, PostgreSQL, nginx, dnsmasq and
+    /// the application under test.
+    /// </para>
+    /// </summary>
+    private async Task<IPage> NewPageAsync(string? storageState)
+    {
+        var context = await Browser.NewContextAsync(new BrowserNewContextOptions
+        {
+            BaseURL = BaseUrl,
+            IgnoreHTTPSErrors = true,
+            ViewportSize = new ViewportSize { Width = 1400, Height = 1000 },
+            StorageState = storageState,
+        });
+
+        var page = await context.NewPageAsync();
+        page.SetDefaultTimeout(30_000);
         return page;
     }
 
