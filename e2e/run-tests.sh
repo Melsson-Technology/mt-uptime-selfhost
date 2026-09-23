@@ -6,7 +6,7 @@
 #                  [--list] [--no-build] [-- <extra dotnet test args>]
 #
 # Tests.E2E.MT-Uptime is deliberately NOT in MT-Uptime.Engine.slnx, so `scripts/test.sh` still runs
-# exactly the 360 hermetic tests it promises. This script is the only supported way to run the other
+# only the hermetic tests it promises. This script is the only supported way to run the other
 # suite, and it exists mostly to do three things nobody should have to remember:
 #
 #   1. Export MTU_E2E_MANIFEST when the manifest is somewhere other than the default, so

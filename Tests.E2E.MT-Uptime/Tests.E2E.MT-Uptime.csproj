@@ -12,7 +12,7 @@
 
     Everything in here breaks that promise on purpose — it wants a MySQL server, an authoritative DNS
     zone and four TLS ports. Keeping it out of the solution is what lets both statements stay true:
-    ./scripts/test.sh remains 360 hermetic tests, and ./e2e/run-tests.sh runs this.
+    ./scripts/test.sh remains the hermetic suite, and ./e2e/run-tests.sh runs this.
 
     Run it with e2e/run-tests.sh, or by path:
         dotnet test engine/Tests.E2E.MT-Uptime

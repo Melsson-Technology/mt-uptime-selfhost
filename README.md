@@ -23,7 +23,8 @@ MT-Uptime is built so it cannot do that:
   checks of the same monitor can never be in flight at once.
 - **Failure never speeds up polling.** Retries happen *within* the existing schedule, not in addition
   to it. A target that is down gets exactly the same request rate as one that is up.
-- **One request in flight per target, always.** No thundering herd when something recovers.
+- **One check in flight per monitor, always.** Nothing speeds up while a target is failing, so nothing
+  stampedes it the moment it recovers.
 - **Per-type defaults that respect the answer's shelf life.** TLS certificates are checked every 6
   hours and DNS every hour, because those answers change on the order of days — not every 60 seconds.
 
@@ -106,7 +107,7 @@ covers this, bind-mount permissions, and backups.
 
 ### From source
 
-Requires a **.NET 10 SDK** (10.0.3xx — pinned in `global.json`).
+Requires a **.NET 10 SDK**, 10.0.302 or newer — `global.json` sets that floor.
 
 ```bash
 git clone https://github.com/Melsson-Technology/mt-uptime-selfhost.git
@@ -169,18 +170,20 @@ including why the checkers can connect to any host and port, and why that is del
 
 ## What's free and what isn't
 
-Everything in this repository is AGPL-3.0 and stays that way. There is no crippled edition: **the hosted
-version at melssontechnology.com runs this exact code.** Monitor types, notification channels, users and
-roles, the API, status pages — all of it is here, and none of it is withheld to sell you an upgrade.
+Everything in this repository is AGPL-3.0 and stays that way. There is no crippled edition: **[the hosted
+version](https://melssontechnology.com/products) runs this same engine.** Monitor types, notification
+channels, users and roles, status pages — all of it is here, and none of it is withheld to sell you an
+upgrade.
 
 Two things are not in this repository, and we would rather you learn that here than after adopting it:
 
-- **The hosted service.** Probe locations around the world, someone watching the watcher, managed
-  backups, SMS credits, upgrades you don't perform. None of that can ship as a tarball — it's
-  operations, not features.
+- **The hosted service.** A vantage point outside your infrastructure, nightly backups kept off the
+  server, and upgrades you don't perform. None of that can ship as a tarball — it's operations, not
+  features.
 - **Multi-client white-labelling.** Per-client branded status pages and SLA reports, aimed at agencies
-  and MSPs billing for monitoring. This *is* an engine feature we hold back, and it's the one that
-  funds the rest. If you're monitoring your own infrastructure, you will never hit it.
+  and MSPs billing for monitoring. It isn't built yet, in either version. When it is, it will be the one
+  engine feature we hold back, and the one that funds the rest. If you're monitoring your own
+  infrastructure, you will never need it.
 
 We would rather say this plainly than have you discover it later. If it changes, it will change in this
 file first.

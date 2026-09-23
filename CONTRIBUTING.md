@@ -26,7 +26,7 @@ considered. If it's something you'd like to fix yourself, say so in an issue and
 when this changes.
 
 The reason is licensing, and it is easier to be straight about it than to leave PRs sitting unanswered.
-MT-Uptime is AGPL-3.0, and Melsson Technology also intends to offer a hosted version. That combination
+MT-Uptime is AGPL-3.0, and Melsson Technology also offers a hosted version. That combination
 works only while Melsson holds the rights to relicense the codebase, which means an outside contribution
 needs a contributor agreement granting those rights **before** it is merged. There is no way to add one
 retroactively — it would mean tracking down every past contributor and getting each to agree, and any who
@@ -41,11 +41,11 @@ The rest of this document is written to make that easier as much as it is writte
 
 ## Getting started
 
-You need a **.NET 10 SDK**, specifically a 10.0.3xx build — `global.json` pins it, so the build will tell
-you if yours is wrong. Nothing else: no database to install, no services to run, no environment variables.
+You need a **.NET 10 SDK**, 10.0.302 or newer — `global.json` sets that floor, so the build will tell you
+if yours is too old. Nothing else: no database to install, no services to run, no environment variables.
 
 ```bash
-./scripts/test.sh     # 429 tests, under a minute
+./scripts/test.sh     # 438 tests, under a minute
 ./scripts/run.sh      # http://localhost:5081
 ```
 
@@ -134,7 +134,7 @@ delivered webhook, and **18 browser tests** driving the installed instance throu
 All four have been run green on a real box.
 
 It is a **separate project, deliberately not in `MT-Uptime.Engine.slnx`**, so `./scripts/test.sh` never
-sees it and stays exactly 429 hermetic tests. Run it with `./e2e/run-tests.sh`, or by path:
+sees it and stays exactly 438 hermetic tests. Run it with `./e2e/run-tests.sh`, or by path:
 
 ```
 dotnet test engine/Tests.E2E.MT-Uptime
