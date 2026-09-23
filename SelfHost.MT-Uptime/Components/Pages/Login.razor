@@ -12,7 +12,7 @@
 
     @if (HasError)
     {
-        <div class="alert error">Invalid username or password.</div>
+        <div class="alert error">Invalid username, email or password.</div>
     }
     else if (JustReset)
     {
@@ -22,7 +22,7 @@
     <form method="post" action="/auth/login" class="form">
         <AntiforgeryToken />
         <input type="hidden" name="returnUrl" value="@ReturnUrl" />
-        <label>Username
+        <label>Username or email
             <input name="username" autocomplete="username" required />
         </label>
         <label>Password

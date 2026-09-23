@@ -58,6 +58,40 @@ public class UserAccountTests
     }
 
     [Fact]
+    public async Task Signing_in_accepts_the_accounts_email_address_in_any_case()
+    {
+        // "Forgot password" asks for the address, and the reset mail never states the username, so the
+        // address is what gets typed afterwards. On 2026-09-23 that produced three rejected sign-ins in a
+        // row from an operator whose new password was right.
+        var db = await TestDatabase.CreateAsync();
+        await using var _db = db;
+        var svc = NewService(db);
+        await svc.CreateAsync("Matt", "correct-horse", "Matt@Example.com", UserRole.Admin);
+
+        Assert.Equal("Matt", (await svc.VerifyAsync("matt@example.com", "correct-horse"))!.Username);
+        Assert.NotNull(await svc.VerifyAsync("MATT@EXAMPLE.COM", "correct-horse"));
+        Assert.Null(await svc.VerifyAsync("matt@example.com", "wrong"));
+        Assert.Null(await svc.VerifyAsync("someone@example.com", "correct-horse"));
+    }
+
+    [Fact]
+    public async Task A_username_that_is_another_accounts_email_address_still_signs_in_as_itself()
+    {
+        // Username and Email are each unique, but only within their own column, so one account's
+        // username can be another's address. The username is matched first: the account that has always
+        // signed in with that string keeps doing so, and the other account uses its own username.
+        var db = await TestDatabase.CreateAsync();
+        await using var _db = db;
+        var svc = NewService(db);
+        await svc.CreateAsync("pat@example.com", "pats-password", null, UserRole.Editor);
+        await svc.CreateAsync("robin", "robins-password", "pat@example.com", UserRole.Viewer);
+
+        Assert.Equal("pat@example.com", (await svc.VerifyAsync("pat@example.com", "pats-password"))!.Username);
+        Assert.Null(await svc.VerifyAsync("pat@example.com", "robins-password"));
+        Assert.Equal("robin", (await svc.VerifyAsync("robin", "robins-password"))!.Username);
+    }
+
+    [Fact]
     public async Task Two_accounts_differing_only_by_case_cannot_both_exist()
     {
         // The other half of a case-insensitive unique index, and the reason it is wanted: two accounts

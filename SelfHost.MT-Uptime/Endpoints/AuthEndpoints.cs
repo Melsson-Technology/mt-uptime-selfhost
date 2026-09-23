@@ -107,9 +107,10 @@ public static class AuthEndpoints
             var user = await users.VerifyAsync(username, password);
             if (user is null)
             {
-                // The submitted username is logged; the password never is, not even its length.
-                log.LogWarning("Sign-in failed for username '{Username}' from {Client}: no such account, " +
-                    "or the password did not match", ForLog(username), ClientOf(http));
+                // What was typed is logged (a username or an email address); the password never is, not
+                // even its length.
+                log.LogWarning("Sign-in failed for '{Login}' from {Client}: no account has that username " +
+                    "or email, or the password did not match", ForLog(username), ClientOf(http));
                 return Results.Redirect($"/login?error=1{ReturnParam(returnUrl)}");
             }
 

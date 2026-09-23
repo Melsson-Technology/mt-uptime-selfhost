@@ -46,6 +46,12 @@ versioning will follow [Semantic Versioning](https://semver.org/) from 1.0.0 onw
 
 ### Changed
 
+- **Sign in with your email address as well as your username.** "Forgot password" asks for the email
+  address and the reset email never mentions the username, so after a reset the address is the natural
+  thing to type. Until now it failed with the same "Invalid username or password" as a wrong password.
+  The username is still checked first, so an account whose username happens to look like someone
+  else's email address signs in as before. The page's field now says "Username or email".
+
 - **The interface now carries MT-Uptime's own mark rather than the Melsson Technology gear.** A clock
   whose hands are replaced by a rising trend line. It appears in the browser tab, the navigation bar,
   the sign-in, forgot-password and reset-password pages, and above the title of every public status

@@ -74,10 +74,24 @@ public sealed class UserAccountService(IDbContextFactory<AppDbContext> factory, 
         return user;
     }
 
-    public async Task<AppUser?> VerifyAsync(string username, string password, CancellationToken ct = default)
+    /// <summary>
+    /// Signs in by username or by the account's email address, and returns the account if the
+    /// password is right.
+    /// <para>
+    /// The email is accepted because "forgot password" asks for it and the reset mail never states the
+    /// username. So the address was the natural thing to type afterwards, and it failed with the same
+    /// vague error as a wrong password: measured on 2026-09-23, three sign-ins in a row. The username is
+    /// tried first. Both columns are unique and case-insensitive, but only within themselves. If one
+    /// account's username happens to be another account's address, the username match wins, as it
+    /// always did.
+    /// </para>
+    /// </summary>
+    public async Task<AppUser?> VerifyAsync(string login, string password, CancellationToken ct = default)
     {
         await using var db = await factory.CreateDbContextAsync(ct);
-        var user = await db.Users.FirstOrDefaultAsync(u => u.Username == username, ct);
+        var user = await db.Users.FirstOrDefaultAsync(u => u.Username == login, ct);
+        if (user is null && login.Contains('@'))
+            user = await db.Users.FirstOrDefaultAsync(u => u.Email == login, ct);
         if (user is null)
         {
             // Verify against a throwaway hash before giving up. Returning here directly costs one indexed
