@@ -155,6 +155,37 @@ public class ChannelPayloadTests
         Assert.Null(handler.LastBody);
     }
 
+    // --- Webhook ----------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task Webhook_carries_the_failing_checks_evidence()
+    {
+        var (channel, handler) = Webhook();
+
+        await channel.SendAsync(Event(NotifyKind.Down) with { Diagnostics = Evidence() }, WebhookConfig, CancellationToken.None);
+
+        var evidence = Root(handler).GetProperty("evidence");
+        Assert.Equal(CfRay, evidence.GetProperty("headers").GetProperty("cf-ray").GetString());
+        Assert.Equal("Web server is down", evidence.GetProperty("bodySnippet").GetString());
+        Assert.Equal("1.1", evidence.GetProperty("httpVersion").GetString());
+        var timings = evidence.GetProperty("timings");
+        Assert.Equal(21400, timings.GetProperty("connectMs").GetDouble());
+        Assert.Equal(21556, timings.GetProperty("totalMs").GetDouble());
+        Assert.False(timings.GetProperty("connectionReused").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Webhook_evidence_is_null_when_the_check_collected_none()
+    {
+        // Present and null rather than absent, like incident and diagnostics: a consumer can tell "this
+        // check gathered nothing" from "this build predates the field".
+        var (channel, handler) = Webhook();
+
+        await channel.SendAsync(Event(NotifyKind.Down), WebhookConfig, CancellationToken.None);
+
+        Assert.Equal(JsonValueKind.Null, Root(handler).GetProperty("evidence").ValueKind);
+    }
+
     // --- PagerDuty --------------------------------------------------------------------------------
 
     [Fact]
@@ -216,6 +247,19 @@ public class ChannelPayloadTests
             Root(handlerB).GetProperty("dedup_key").GetString());
     }
 
+    [Fact]
+    public async Task PagerDuty_trigger_carries_the_failing_checks_evidence()
+    {
+        var (channel, handler) = PagerDuty();
+
+        await channel.SendAsync(Event(NotifyKind.Down) with { Diagnostics = Evidence() }, PagerDutyConfig, CancellationToken.None);
+
+        var evidence = Root(handler).GetProperty("payload").GetProperty("custom_details").GetProperty("evidence");
+        Assert.Equal(CfRay, evidence.GetProperty("response_headers").GetProperty("cf-ray").GetString());
+        Assert.Equal("Web server is down", evidence.GetProperty("body_snippet").GetString());
+        Assert.Equal(21556, evidence.GetProperty("timings").GetProperty("total_ms").GetDouble());
+    }
+
     // --- Every channel handles a missing secret the same way --------------------------------------
 
     [Fact]
@@ -244,6 +288,44 @@ public class ChannelPayloadTests
         }
     }
 
+    // --- A channel declared Rich must actually carry the evidence ----------------------------------
+
+    [Fact]
+    public async Task Every_channel_declared_Rich_carries_the_evidence()
+    {
+        // VerbosityFor is a promise about the payload, not a label. Webhook and PagerDuty were declared
+        // Rich while building their own JSON without the evidence, so the cf-ray Slack carried inline never
+        // reached the two consumers able to use it structured, and nothing noticed. This pins the promise
+        // to the bytes on the wire. Email is the one Rich type not here: it is a SendGrid message rather
+        // than an HTTP channel, and AlertEmailTests covers what it renders.
+        var handler = new CapturingHandler();
+        var factory = new StubHttpClientFactory(handler);
+        var protector = new PassthroughProtector();
+
+        (INotificationChannel Channel, string Config)[] channels =
+        [
+            (new SlackNotificationChannel(factory, protector), """{"WebhookUrl":"https://hooks.slack.com/services/T0/B0/tok"}"""),
+            (new DiscordNotificationChannel(factory, protector), """{"WebhookUrl":"https://discord.com/api/webhooks/1/x"}"""),
+            (new TeamsNotificationChannel(factory, protector), """{"WebhookUrl":"https://example.logic.azure.com/x"}"""),
+            (new WebhookNotificationChannel(factory, protector), WebhookConfig),
+            (new PagerDutyNotificationChannel(factory, protector), PagerDutyConfig),
+        ];
+
+        // A new Rich type must be added above, not silently left out of the check.
+        var rich = Enum.GetValues<NotificationChannelType>()
+            .Where(t => t != NotificationChannelType.Email && NotificationRenderer.VerbosityFor(t) == AlertVerbosity.Rich)
+            .Order();
+        Assert.Equal(rich, channels.Select(c => c.Channel.Type).Order());
+
+        foreach (var (channel, config) in channels)
+        {
+            Assert.True(await channel.SendAsync(Event(NotifyKind.Down) with { Diagnostics = Evidence() }, config, CancellationToken.None),
+                $"{channel.Type} did not send");
+            Assert.True(handler.LastBody!.Contains(CfRay, StringComparison.Ordinal), $"{channel.Type} dropped the cf-ray");
+            Assert.True(handler.LastBody.Contains("Web server is down", StringComparison.Ordinal), $"{channel.Type} dropped the response body");
+        }
+    }
+
     // "Every channel type has an implementation" lives in WebhookLoggingTests, resolved from the real
     // container — a hand-written list here would pass while the registration was missing, which is the
     // failure that actually ships.
@@ -251,6 +333,17 @@ public class ChannelPayloadTests
     // --- helpers ---------------------------------------------------------------------------------
 
     private const string PagerDutyConfig = """{"RoutingKey":"R0UT1NGK3Y"}""";
+    private const string WebhookConfig = """{"Url":"https://hooks.example.com/mt-uptime"}""";
+    private const string CfRay = "9c1a2b3c4d5e6f70-LHR";
+
+    /// <summary>What a failing HTTP check behind Cloudflare keeps: the case the evidence exists for.</summary>
+    private static CheckDiagnostics Evidence() => new()
+    {
+        Timings = new ProbeTimingBreakdown(12, 21400, 8, 21500, 21556),
+        Headers = new Dictionary<string, string> { ["cf-ray"] = CfRay, ["server"] = "cloudflare" },
+        BodySnippet = "Web server is down",
+        HttpVersion = "1.1",
+    };
 
     private static NotificationEvent Event(NotifyKind kind) => new(
         MonitorId: 1,
@@ -289,6 +382,12 @@ public class ChannelPayloadTests
     {
         var h = new CapturingHandler();
         return (new GotifyNotificationChannel(new StubHttpClientFactory(h), new PassthroughProtector()), h);
+    }
+
+    private static (WebhookNotificationChannel, CapturingHandler) Webhook()
+    {
+        var h = new CapturingHandler();
+        return (new WebhookNotificationChannel(new StubHttpClientFactory(h), new PassthroughProtector()), h);
     }
 
     private static (PagerDutyNotificationChannel, CapturingHandler) PagerDuty()

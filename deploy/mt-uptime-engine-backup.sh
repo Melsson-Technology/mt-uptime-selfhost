@@ -112,34 +112,56 @@ key_id_of_payload () {
     "${b:10:2}" "${b:8:2}" "${b:14:2}" "${b:12:2}" "${b:16:4}" "${b:20:12}"
 }
 
+# WHERE THE SECRETS ARE. Only the SendGrid key is a column value in its own right. Everything else - a
+# notification channel's URL or token, a monitored database's password, an HTTP monitor's credentials
+# and headers - is a string value INSIDE a ConfigJson document: {"Url":"CfDJ8..."}. This used to match
+# only values that START with the payload prefix, so it saw the one secret most instances do not have and
+# none of the ones they do, and passed "0 stored secrets, normal for a new instance" over a database full
+# of them. Proven on a clean box: an archive carrying another instance's key ring passed, was restored, and
+# every channel then failed to send.
+#
+# So a payload counts when it is a whole value or a whole JSON string value, in every table except the two
+# that hold nothing but probe output. Those are skipped on purpose: a monitored ASP.NET Core site's own
+# Data Protection tokens also begin CfDJ8, can arrive in a captured failure, and belong to a key ring we
+# have never had. Counting them would fail a good backup. Every match is checked, not a sample.
+list_payloads () {
+  sqlite3 "$1" "SELECT name FROM sqlite_master WHERE type='table' AND name NOT IN ('Heartbeats','StatRollups');" \
+  | while read -r t; do
+      sqlite3 "$1" "PRAGMA table_info('$t');" | cut -d'|' -f2 | while read -r c; do
+        [ -z "$c" ] && continue
+        sqlite3 "$1" "SELECT CAST(\"$c\" AS TEXT) FROM '$t' WHERE CAST(\"$c\" AS TEXT) LIKE '%CfDJ8%';" 2>/dev/null || true
+      done
+    done \
+  | { grep -oE '^CfDJ8[A-Za-z0-9_-]+$|"CfDJ8[A-Za-z0-9_-]+"' || true; } | tr -d '"' | sort -u
+}
+
 log "checking the key ring against the secrets it has to decrypt"
-PAYLOADS=$(
-  sqlite3 "$WORK/mt-uptime.db" "SELECT name FROM sqlite_master WHERE type='table';" | while read -r t; do
-    sqlite3 "$WORK/mt-uptime.db" "PRAGMA table_info('$t');" | cut -d'|' -f2 | while read -r c; do
-      [ -z "$c" ] && continue
-      sqlite3 "$WORK/mt-uptime.db" \
-        "SELECT CAST(\"$c\" AS TEXT) FROM '$t' WHERE CAST(\"$c\" AS TEXT) LIKE 'CfDJ8%' LIMIT 5;" 2>/dev/null
-    done
-  done
-)
+PAYLOADS=$(list_payloads "$WORK/mt-uptime.db")
 
 SECRETS=0
 UNMATCHED=""
+KEY_USE=""
 while read -r p; do
   [ -z "$p" ] && continue
   SECRETS=$((SECRETS + 1))
   if kid=$(key_id_of_payload "$p"); then
+    KEY_USE="$KEY_USE$kid"$'\n'
     [ -f "$WORK/keys/key-$kid.xml" ] || UNMATCHED="$UNMATCHED $kid"
   else
     UNMATCHED="$UNMATCHED (unparseable-payload)"
   fi
 done <<< "$PAYLOADS"
+# Several secrets can share one missing key; name each key once.
+UNMATCHED=$(printf '%s\n' $UNMATCHED | sort -u | xargs)
+[ -z "$KEY_USE" ] || printf '%s' "$KEY_USE" | sort | uniq -c | while read -r n kid; do
+  log "    $n secret(s) encrypted with key $kid"
+done
 
 if [ "$SECRETS" -eq 0 ]; then
   # Not a failure: a fresh instance with no channels and no mail sender genuinely has no secrets yet.
   log "no encrypted secrets stored yet - nothing to pair (this is normal for a new instance)"
 else
-  [ -z "$UNMATCHED" ] || die "the key ring does NOT contain the key(s) that encrypted this data:$UNMATCHED - a restore would lose those secrets"
+  [ -z "$UNMATCHED" ] || die "the key ring does NOT contain the key(s) that encrypted this data: $UNMATCHED - a restore would lose those secrets"
   log "all $SECRETS stored secret(s) are decryptable by the keys in this archive"
 fi
 

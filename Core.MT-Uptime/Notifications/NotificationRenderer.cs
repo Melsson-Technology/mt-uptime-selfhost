@@ -90,7 +90,9 @@ public static class NotificationRenderer
         NotificationChannelType.Discord => AlertVerbosity.Rich,
 
         // Structured payloads: these do not render the plain-text body at all, they carry the same
-        // fields as JSON. Rich is the honest answer — nothing is being held back from them.
+        // fields as JSON. Rich is the honest answer — nothing is being held back from them — and
+        // ChannelPayloadTests.Every_channel_declared_Rich_carries_the_evidence keeps it honest. Until it
+        // existed, both of these dropped the check's evidence while being declared Rich.
         NotificationChannelType.Webhook => AlertVerbosity.Rich,
         NotificationChannelType.PagerDuty => AlertVerbosity.Rich,
 

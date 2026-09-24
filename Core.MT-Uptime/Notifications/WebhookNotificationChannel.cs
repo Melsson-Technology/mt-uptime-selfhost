@@ -56,9 +56,36 @@ public sealed class WebhookNotificationChannel(IHttpClientFactory http, ISecretP
                 recentResponseTimesMs = evt.Enrichment.RecentResponseTimesMs,
                 certificateExpiresAt = evt.Enrichment.CertificateExpiresAt?.ToString("o"),
             },
+            // What the failing check itself saw: where the time went, the allowlisted response headers
+            // (cf-ray is the one a CDN's support desk asks for) and the start of the error page. The
+            // text channels have always rendered this record; a webhook is declared Rich too, and used
+            // to drop it, so the one consumer most able to use the evidence structured got none of it.
+            // Null on a healthy check and for probes that collect none, which is everything but HTTP.
+            evidence = Evidence(evt.Diagnostics),
         };
 
         var resp = await Http.PostAsJsonAsync(url, payload, ct);
         return resp.IsSuccessStatusCode;
     }
+
+    /// <summary>
+    /// The evidence as its own object, named after <see cref="Monitoring.CheckDiagnostics"/> so the
+    /// payload and the heartbeat's stored copy read the same. Null when the check collected none.
+    /// </summary>
+    private static object? Evidence(Monitoring.CheckDiagnostics? d) => d is null ? null : new
+    {
+        timings = d.Timings is not { } t ? null : new
+        {
+            dnsMs = t.DnsMs,
+            connectMs = t.ConnectMs,
+            tlsMs = t.TlsMs,
+            timeToFirstByteMs = t.TimeToFirstByteMs,
+            totalMs = t.TotalMs,
+            connectionReused = t.ConnectionReused,
+        },
+        headers = d.Headers,
+        bodySnippet = d.BodySnippet,
+        finalUrl = d.FinalUrl,
+        httpVersion = d.HttpVersion,
+    };
 }

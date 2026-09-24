@@ -1,6 +1,6 @@
 # End-to-end battery
 
-Everything in `engine/Tests.MT-Uptime` is hermetic on purpose: throwaway SQLite files, no external
+Everything in `Tests.MT-Uptime` is hermetic on purpose: throwaway SQLite files, no external
 services, no environment variables. That is a promise worth keeping, and it leaves a gap. Nothing in it
 has ever proved, on a clean machine, that
 
@@ -205,7 +205,7 @@ installer's self-check round-trips it through both shapes so the two cannot drif
 It is `0640 root:<test user>`, because it holds the database passwords.
 
 **Without a readable manifest every test reports `SKIPPED`, not failed.** So
-`dotnet test engine/Tests.E2E.MT-Uptime` is safe to run anywhere — a laptop that has never seen an E2E
+`dotnet test Tests.E2E.MT-Uptime` is safe to run anywhere — a laptop that has never seen an E2E
 box included. Point it elsewhere with `MTU_E2E_MANIFEST=/path/to/targets.env`.
 
 ## Breaking things by hand
@@ -237,8 +237,8 @@ shell for the asking.
 ## Why this is not in the solution
 
 `Tests.E2E.MT-Uptime` is **not** a member of `MT-Uptime.Engine.slnx`, so `./scripts/test.sh` never sees
-it and continues to report exactly 371 hermetic tests. Run this suite with `./e2e/run-tests.sh`, or by
-path with `dotnet test engine/Tests.E2E.MT-Uptime`.
+it and runs only the hermetic suite. Run this one with `./e2e/run-tests.sh`, or by path with
+`dotnet test Tests.E2E.MT-Uptime` from the repository root.
 
 The whole assembly also runs its tests **one at a time**
 (`[assembly: CollectionBehavior(DisableTestParallelization = true)]`), for two reasons. The target
@@ -249,8 +249,8 @@ into a single incident that neither test set up.
 
 ## No certificates are committed
 
-`scripts/publish-public.sh` refuses to publish if a `.crt`, `.key` or `.pem` is tracked anywhere under
-`engine/`, which is why `targets/make-certs.sh` mints everything at runtime into
+The script that publishes this repository refuses to if a `.crt`, `.key` or `.pem` is tracked anywhere
+in it, which is why `targets/make-certs.sh` mints everything at runtime into
 `/etc/mt-uptime-e2e/certs`. Keep it that way: a test certificate in a public repository is still a
 private key in a public repository.
 
@@ -288,8 +288,9 @@ been discovered the slow way:
   it renders "This status page is not available." with a success code. The check asserts what the
   product does and the discrepancy is recorded as a finding — a 200 for a page that does not exist is
   wrong for anything that crawls or monitors it.
-* **`/_framework/blazor.web.js` is only a `200` on a published build.** Run from source with
-  `dotnet run`, a Debug build answers `500`: `MapStaticAssets` attaches the framework's development
-  runtime handler, which looks for the file under `wwwroot/_framework` where it has never been
-  written. Nothing to fix — the installed instance is always a publish — but it is an hour lost to
-  anyone who tries to reproduce that one check locally.
+* **`/_framework/blazor.web.js` answers `200` from source as well as from a publish.** This note used
+  to say a Debug build run with `dotnet run` answered `500`, because `MapStaticAssets` attached the
+  framework's development handler and looked for the file where it had never been written. Measured
+  again on 2026-09-24 on clean Ubuntu machines, with SDKs 10.0.112 and 10.0.401, `./scripts/run.sh`
+  serves it with a `200` and the dashboard is fully interactive. If a local check disagrees, suspect
+  the SDK before the application.

@@ -87,10 +87,16 @@ echo
 
 # --- 1. the SDK -----------------------------------------------------------------------------------
 #
-# dotnet-install.sh rather than apt. Ubuntu's dotnet-sdk-10.0 may sit on a feature band older than
-# global.json asks for (10.0.302, rollForward latestFeature), and the failure is a restore error that
-# reads like a broken NuGet feed. The SERVICE does not use this SDK — provision.sh installs
-# aspnetcore-runtime-10.0 from apt for that — this is only for building the package.
+# dotnet-install.sh rather than apt, so the SDK lands in the invoking user's home, where the account
+# running the tests can reach it without root. (Ubuntu's dotnet-sdk-10.0 would also build it now: global.json
+# accepts any 10.0 SDK. It used to demand 10.0.302, which no distribution packaged.) The SERVICE does not
+# use this SDK — provision.sh installs aspnetcore-runtime-10.0 from apt for that — this only builds the
+# package.
+#
+# TMPDIR points into the user's home because dotnet-install.sh downloads the SDK archive AND unpacks it
+# in the temp directory before moving it into place, about a gigabyte between them. Ubuntu 26.04 mounts
+# /tmp as a RAM-backed tmpfs with per-user quotas, 918 MB on a 2 GB machine, and the install then dies
+# with "Extraction failed" while tar reports "Disk quota exceeded", which reads like a full disk.
 
 if [[ $SKIP_SDK -eq 0 && $SKIP_BUILD -eq 0 ]]; then
     if runuser -u "$REAL_USER" -- bash -lc 'command -v dotnet >/dev/null 2>&1'; then
@@ -99,9 +105,11 @@ if [[ $SKIP_SDK -eq 0 && $SKIP_BUILD -eq 0 ]]; then
         echo "==> .NET SDK"
         runuser -u "$REAL_USER" -- bash -lc '
             set -euo pipefail
-            curl -sSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh
-            bash /tmp/dotnet-install.sh --channel 10.0
-            rm -f /tmp/dotnet-install.sh'
+            export TMPDIR="$HOME/.cache/dotnet-install"
+            mkdir -p "$TMPDIR"
+            curl -sSL https://dot.net/v1/dotnet-install.sh -o "$TMPDIR/dotnet-install.sh"
+            bash "$TMPDIR/dotnet-install.sh" --channel 10.0
+            rm -rf "$TMPDIR"'
         echo "    installed to $REAL_HOME/.dotnet — add it to PATH in your own shell:"
         echo "        export PATH=\$HOME/.dotnet:\$PATH"
     fi

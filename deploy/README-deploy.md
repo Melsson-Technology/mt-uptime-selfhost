@@ -18,12 +18,17 @@ Two scripts do everything in sections 1–6. On your machine:
 scp build/mt-uptime.tar.gz you@server:~
 ```
 
+That builds for an x64 server. For an ARM one — a Raspberry Pi, AWS Graviton, Ampere — add
+`--arch arm64` (`-Arch arm64` in PowerShell). A build for the other CPU cannot run, and
+`deploy-on-server.sh` refuses one before it stops anything.
+
 Then on the server, once:
 
 ```bash
 tar -xzf mt-uptime.tar.gz && cd deploy
 sudo ./provision.sh uptime.example.com    # user, runtime, nginx, systemd unit, state dir
 sudo ./deploy-on-server.sh ~/mt-uptime.tar.gz
+sudo apt-get install -y certbot python3-certbot-nginx
 sudo certbot --nginx -d uptime.example.com
 
 # The wizard asks for a one-time token, generated on first start:

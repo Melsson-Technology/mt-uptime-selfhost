@@ -36,6 +36,34 @@ tar -xzf "$TARBALL" -C "$STAGE"
 [[ -f "$STAGE/publish/MT.Uptime.Web.dll" ]] || {
     echo "publish/MT.Uptime.Web.dll missing — refusing to deploy a broken build" >&2; exit 1; }
 
+# Refuse a build for another CPU, also before touching the running service.
+#
+# build-and-package.sh publishes for one runtime identifier, and even a framework-dependent build is not
+# portable across them: the SDK marks the main assembly for that architecture, so an x64 build on an ARM
+# box dies at load with "The assembly architecture is not compatible with the current process
+# architecture". The rollback further down would recover a redeploy from that, but a first deploy has
+# nothing to roll back to and would end with no service at all. The deps.json names the target, so
+# compare it with this machine while nothing has been changed yet. A portable build names no RID and
+# is let through.
+DEPS="$STAGE/publish/MT.Uptime.Web.deps.json"
+if [[ -f "$DEPS" ]]; then
+    BUILD_RID="$(grep -oE '"name": *"\.NETCoreApp,Version=v[0-9.]+/[a-z0-9-]+"' "$DEPS" | head -1 \
+        | sed -E 's|.*/([a-z0-9-]+)"$|\1|' || true)"
+    case "$(uname -m)" in
+        x86_64)        HOST_RID=linux-x64 ;;
+        aarch64|arm64) HOST_RID=linux-arm64 ;;
+        *)             HOST_RID="" ;;
+    esac
+    if [[ -n "$BUILD_RID" && -n "$HOST_RID" && "$BUILD_RID" != "$HOST_RID" ]]; then
+        {
+            echo "REFUSING: this build is for $BUILD_RID and this machine is $HOST_RID ($(uname -m))."
+            echo "Nothing has been stopped or changed. Build for this machine instead:"
+            echo "    ./scripts/build-and-package.sh --arch ${HOST_RID#linux-}"
+        } >&2
+        exit 1
+    fi
+fi
+
 mkdir -p "$APP_HOME"
 
 echo "==> stopping $SERVICE"
@@ -201,7 +229,14 @@ HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:5081}"
 echo "==> health check ${HEALTH_URL%/}/healthz"
 if curl -fsS --max-time 10 "${HEALTH_URL%/}/healthz" >/dev/null 2>&1; then
     echo
-    echo "Deployed and healthy. Previous build kept at $APP_HOME/publish.old"
+    # Only claim a rollback target that exists. A first deploy has none, and saying otherwise sends the
+    # operator who later needs one to a directory that was never there.
+    if [[ -d "$APP_HOME/publish.old" ]]; then
+        echo "Deployed and healthy. Previous build kept at $APP_HOME/publish.old"
+    else
+        echo "Deployed and healthy. This was the first deploy, so there is no previous build to keep;"
+        echo "the next deploy will keep this one at $APP_HOME/publish.old."
+    fi
 else
     echo
     echo "WARNING: deployed, but /healthz did not respond." >&2

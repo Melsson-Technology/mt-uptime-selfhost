@@ -14,6 +14,10 @@
 #  the reason is not obvious. Back the two up together or you do not have a backup.
 #
 #  So: one volume, the whole directory. Do not narrow it.
+#
+#  Compose names it mt-uptime_mt-uptime-data - the project name comes first - so a command that says
+#  "-v mt-uptime-data:..." reaches a different, empty volume. Back up through the container instead
+#  (docker run --volumes-from mt-uptime ...); docker/README.md has the commands.
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 
 name: mt-uptime
@@ -75,6 +79,17 @@ services:
       # Workstation GC, set in the image, keeps memory small on a 1 vCPU / 1 GB host. Remove the
       # setting on a larger box if you would rather have throughput.
       # DOTNET_gcServer: "1"
+
+    # Docker's default json-file log is never rotated, so on a small disk it is a slow outage of its own.
+    # MT-Uptime's log is modest now that EF Core's per-statement logging is off (see appsettings.json),
+    # but a monitor is exactly the thing that runs untouched for a year. Three 10 MB files, then the
+    # oldest goes. If your daemon ships container logs elsewhere (journald, a log collector), delete this
+    # block: naming a driver here overrides the one configured in daemon.json.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/healthz"]

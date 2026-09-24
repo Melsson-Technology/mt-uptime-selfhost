@@ -41,11 +41,12 @@ The rest of this document is written to make that easier as much as it is writte
 
 ## Getting started
 
-You need a **.NET 10 SDK**, 10.0.302 or newer — `global.json` sets that floor, so the build will tell you
-if yours is too old. Nothing else: no database to install, no services to run, no environment variables.
+You need a **.NET 10 SDK** — any 10.0 release; `global.json` sets the floor at 10.0.100, so the feature
+band a distribution packages (Ubuntu's `dotnet-sdk-10.0` is 10.0.1xx) is enough. Nothing else: no
+database to install, no services to run, no environment variables.
 
 ```bash
-./scripts/test.sh     # 438 tests, under a minute
+./scripts/test.sh     # 449 tests, about a minute
 ./scripts/run.sh      # http://localhost:5081
 ```
 
@@ -134,10 +135,10 @@ delivered webhook, and **18 browser tests** driving the installed instance throu
 All four have been run green on a real box.
 
 It is a **separate project, deliberately not in `MT-Uptime.Engine.slnx`**, so `./scripts/test.sh` never
-sees it and stays exactly 438 hermetic tests. Run it with `./e2e/run-tests.sh`, or by path:
+sees it and stays exactly 449 hermetic tests. Run it with `./e2e/run-tests.sh`, or by path:
 
 ```
-dotnet test engine/Tests.E2E.MT-Uptime
+dotnet test Tests.E2E.MT-Uptime
 ```
 
 Without a target manifest every test reports **skipped** rather than failed, so that command is safe on

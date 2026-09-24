@@ -75,6 +75,9 @@ public sealed class PagerDutyNotificationChannel(IHttpClientFactory http, ISecre
                         previous_state_since = evt.Enrichment?.PreviousStateSince?.ToString("o"),
                         recent_response_times_ms = evt.Enrichment?.RecentResponseTimesMs,
                         certificate_expires_at = evt.Enrichment?.CertificateExpiresAt?.ToString("o"),
+                        // The failing check's own evidence, which the responder opening the incident is
+                        // the person most likely to need. See the note in WebhookNotificationChannel.
+                        evidence = Evidence(evt.Diagnostics),
                     },
                 },
             };
@@ -88,6 +91,27 @@ public sealed class PagerDutyNotificationChannel(IHttpClientFactory http, ISecre
     /// time-varying here — a timestamp, a random id — would leave every incident permanently open.
     /// </summary>
     internal static string DedupKey(int monitorId) => $"mt-uptime-monitor-{monitorId}";
+
+    /// <summary>
+    /// The evidence in custom_details' own snake_case, so it reads like its neighbours in the PagerDuty
+    /// incident view. Null when the check collected none.
+    /// </summary>
+    private static object? Evidence(Monitoring.CheckDiagnostics? d) => d is null ? null : new
+    {
+        timings = d.Timings is not { } t ? null : new
+        {
+            dns_ms = t.DnsMs,
+            connect_ms = t.ConnectMs,
+            tls_ms = t.TlsMs,
+            time_to_first_byte_ms = t.TimeToFirstByteMs,
+            total_ms = t.TotalMs,
+            connection_reused = t.ConnectionReused,
+        },
+        response_headers = d.Headers,
+        body_snippet = d.BodySnippet,
+        final_url = d.FinalUrl,
+        http_version = d.HttpVersion,
+    };
 
     /// <summary>PagerDuty's severity vocabulary.</summary>
     internal static string SeverityOf(AlertSeverity severity) => severity switch

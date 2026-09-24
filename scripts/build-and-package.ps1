@@ -1,6 +1,6 @@
-# build-and-package.ps1 - publish MT-Uptime for linux-x64 and bundle it with the deploy assets.
+# build-and-package.ps1 - publish MT-Uptime for a Linux server and bundle it with the deploy assets.
 #
-# Run from anywhere:  .\scripts\build-and-package.ps1
+# Run from anywhere:  .\scripts\build-and-package.ps1 [-Arch x64|arm64] [-SelfContained]
 # Produces:           build\mt-uptime.tar.gz
 #
 # Copy that tarball to the server and run deploy/deploy-on-server.sh there.
@@ -9,6 +9,9 @@
 # deploy/README-deploy.md), which keeps the tarball small and lets security patches to the runtime
 # arrive through the distribution's package manager rather than requiring a redeploy.
 #
+#   -Arch x64|arm64   the SERVER's CPU, not this machine's. Default x64. Use arm64 for a Raspberry Pi, AWS
+#                     Graviton, Ampere or any other 64-bit ARM host. A build for one does not run on the
+#                     other, and deploy-on-server.sh refuses a mismatch before touching anything.
 #   -SelfContained    bundle the .NET runtime into the build (~50 MB instead of ~5 MB)
 #
 # Use -SelfContained when installing a runtime on the target is undesirable: a shared host running
@@ -19,8 +22,13 @@
 # `tar` ships with Windows 10 build 17063 and later, so no extra tooling is needed.
 
 param(
-    [switch]$SelfContained
+    [switch]$SelfContained,
+    # Not auto-detected on purpose: the machine building the tarball is routinely not the one running it.
+    [ValidateSet("x64", "arm64")]
+    [string]$Arch = "x64"
 )
+
+$rid = "linux-$Arch"
 
 $ErrorActionPreference = "Stop"
 
@@ -32,13 +40,13 @@ if (Test-Path $build) { Remove-Item -Recurse -Force $build }
 New-Item -ItemType Directory -Force -Path $publish | Out-Null
 
 if ($SelfContained) {
-    Write-Host "==> publish SelfHost.MT-Uptime (linux-x64, SELF-CONTAINED - no runtime needed on the target)"
+    Write-Host "==> publish SelfHost.MT-Uptime ($rid, SELF-CONTAINED - no runtime needed on the target)"
 } else {
-    Write-Host "==> publish SelfHost.MT-Uptime (linux-x64, framework-dependent)"
+    Write-Host "==> publish SelfHost.MT-Uptime ($rid, framework-dependent)"
 }
 dotnet publish (Join-Path $engine "SelfHost.MT-Uptime") `
     -c Release `
-    -r linux-x64 `
+    -r $rid `
     --self-contained $(if ($SelfContained) { "true" } else { "false" }) `
     -o $publish
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed" }
@@ -58,5 +66,5 @@ tar -czf (Join-Path $build "mt-uptime.tar.gz") -C $build publish deploy
 if ($LASTEXITCODE -ne 0) { throw "tar failed" }
 
 Write-Host ""
-Write-Host "Done: $(Join-Path $build 'mt-uptime.tar.gz')"
+Write-Host "Done: $(Join-Path $build 'mt-uptime.tar.gz') ($rid)"
 Write-Host "Next: scp it to the server, then  sudo ./deploy-on-server.sh mt-uptime.tar.gz"

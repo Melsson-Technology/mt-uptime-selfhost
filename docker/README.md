@@ -151,30 +151,62 @@ worked example; the `proxy_pass` port there is the host port you mapped.
 
 ## Backup and restore
 
-```bash
-# Back up the whole state directory, database and keys together.
-docker run --rm -v mt-uptime-data:/data -v "$PWD:/out" alpine \
-  tar czf /out/mt-uptime-backup.tar.gz -C /data .
+These reach the data **through the container** rather than naming the volume, because the volume's real
+name depends on how it was made: Compose prefixes it with the project, so the quick start's volume is
+`mt-uptime_mt-uptime-data`, and `-v mt-uptime-data:/data` would quietly create a new, empty volume and back
+that up instead. That mistake is silent — the backup exits 0 and holds an empty directory — which is why
+these use `--volumes-from mt-uptime`: it follows the container to whatever it actually has mounted.
 
-# Restore into a fresh volume.
-docker run --rm -v mt-uptime-data:/data -v "$PWD:/in" alpine \
-  tar xzf /in/mt-uptime-backup.tar.gz -C /data
+```bash
+# Back up the whole state directory, database and keys together. Stopping first gives a clean copy.
+docker compose stop
+docker run --rm --volumes-from mt-uptime -v "$PWD:/out" alpine \
+  tar czf /out/mt-uptime-backup.tar.gz -C /var/lib/mt-uptime .
+docker compose start
+
+# Look before you rely on it: mt-uptime.db and keys/key-*.xml must both be listed.
+tar tzf mt-uptime-backup.tar.gz
 ```
 
-Stop the container first for a clean copy, or use the authenticated `/admin/backup` endpoint, which
-checkpoints SQLite properly while running.
+A restore replaces the data, so it goes into a fresh volume:
 
-**Perform a restore once, before you need one.** A backup nobody has restored is a hypothesis.
+```bash
+docker compose down -v    # removes the container AND its volume — be sure of the backup first
+docker compose create     # a new, empty volume and container, not yet started
+docker run --rm --volumes-from mt-uptime -v "$PWD:/in" alpine \
+  tar xzf /in/mt-uptime-backup.tar.gz -C /var/lib/mt-uptime
+docker compose start
+```
+
+Without Compose the same two `docker run` lines work unchanged, because they rely only on the
+container's name: use `docker stop` / `docker start mt-uptime` around the backup, and for a restore
+remove and recreate the container and its volume with the commands shown earlier under *There is no
+prebuilt image yet*, using `docker create` in place of `docker run -d`, restore, then start it.
+
+The authenticated `/admin/backup` endpoint is safe against a running instance, but it returns the
+**database alone**, without the keys that decrypt its secrets, so it is a convenience rather than a
+backup of this volume.
+
+**Perform a restore once, before you need one.** A backup nobody has restored is a hypothesis. And check
+the part that can fail silently: a database restored without its keys starts, migrates and reports
+healthy, so open a notification channel afterwards and press **Send test**.
 
 ## Upgrading
 
+There is no published image yet, so an upgrade is a rebuild from the updated source:
+
 ```bash
-docker compose pull
-docker compose up -d
+git pull
+docker compose up -d --build
 ```
 
-Pending EF migrations apply automatically at startup. The volume is untouched. `latest` moves with
-every release, so pin the twelve-character SHA tag if you would rather choose when to move.
+`--build` is the step that matters. `docker compose pull` does **not** upgrade this setup: with a
+`build:` service and no image to fetch it prints "Skipped - No image to be pulled", `up -d` then finds the
+container already running, and you are left on the old version with nothing to say so.
+
+Pending EF migrations apply automatically at startup and the volume is untouched — an instance built
+from `v0.1.0` upgrades to the current source in place, accounts and history intact. Take a backup first
+anyway. When published images exist, this becomes `docker compose pull && docker compose up -d`.
 
 ## Building it yourself
 

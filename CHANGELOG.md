@@ -7,6 +7,20 @@ versioning will follow [Semantic Versioning](https://semver.org/) from 1.0.0 onw
 
 ### Added
 
+- **Webhook and PagerDuty alerts carry the failing check's evidence.** The webhook payload gains an
+  `evidence` object, and PagerDuty's `custom_details` an `evidence` entry: the per-leg timings (DNS,
+  connect, TLS, first byte, total), the allowlisted response headers including `cf-ray`, the start of the
+  error page, the final URL and the HTTP version. Both channels were declared Rich but built their own
+  JSON without it, so the two consumers best placed to use it structured got none of what Slack carried
+  inline. The field is `null` when the check collected nothing (every probe type but HTTP, and every
+  healthy check); existing fields are unchanged. A test now fails if any channel declared Rich drops it.
+
+- **`build-and-package.sh --arch arm64`** (`-Arch arm64` in PowerShell) builds for an ARM server — a
+  Raspberry Pi, Graviton, Ampere. The script was hard-wired to `linux-x64`, and that build dies on ARM at
+  load with "The assembly architecture is not compatible with the current process architecture", so the
+  systemd path was x64-only in practice. The default is still x64: the machine that builds the tarball is
+  routinely not the one that runs it, so this is not guessed.
+
 - **A backup that includes the Data Protection key ring, and proves it.** `deploy/install-backups.sh`
   installs a nightly systemd timer that copies the database with SQLite's online backup API (no
   downtime), runs `integrity_check`, archives `keys/` alongside it, and optionally uploads to S3.
@@ -45,6 +59,20 @@ versioning will follow [Semantic Versioning](https://semver.org/) from 1.0.0 onw
   existing hosts need no change.
 
 ### Changed
+
+- **EF Core no longer logs every SQL statement.** `Microsoft.EntityFrameworkCore.Database.Command` is at
+  Warning in `appsettings.json`. At Information every heartbeat written and every page rendered put its
+  SQL in the log, about 3 KB per check, and under Docker that went into a json-file log nothing rotated —
+  measured at 75 KB a minute with two monitors on a 1 GB box. Parameter values were never included, so
+  this was volume rather than disclosure. To see statements again, set
+  `Logging__LogLevel__Microsoft.EntityFrameworkCore.Database.Command=Information` in the environment.
+  `docker-compose.yml` now also caps the container log at three 10 MB files.
+
+- **Any .NET 10 SDK builds it.** `global.json` asked for 10.0.302, which no distribution packages:
+  Ubuntu 24.04 and 26.04 both ship `dotnet-sdk-10.0` 10.0.112, which stopped at "A compatible .NET SDK
+  was not found". The floor is now 10.0.100 (still `latestFeature`, so a newer SDK is used when present).
+  Measured with 10.0.112 before the change was made: the build is clean under `-warnaserror` and every
+  test passes.
 
 - **Sign in with your email address as well as your username.** "Forgot password" asks for the email
   address and the reset email never mentions the username, so after a reset the address is the natural
@@ -421,6 +449,46 @@ previous published version.
   to spot a password-spray with.
 
 ### Fixed
+
+- **The backup's key-ring check now sees the secrets it exists to protect.** `mt-uptime-engine-backup.sh`
+  and `-restore.sh` prove an archive's key ring can decrypt its own ciphertext — but they looked only
+  for values that *begin* with a Data Protection payload. Only the SendGrid key is stored that way. A
+  channel's URL or token, a monitored database's password and an HTTP monitor's credentials are string
+  values inside a `ConfigJson` document, so the check found "0 stored secrets" and passed vacuously. On a
+  clean box, an archive carrying another instance's key ring rehearsed as PASSED, restored cleanly, and
+  every notification channel then failed to send. Payloads are now found whole or as whole JSON string
+  values, every one is checked rather than a sample of five, and the two tables holding only probe
+  output are skipped — a monitored ASP.NET Core site's own tokens can be captured there and belong to a
+  key ring this instance never had. **If you rely on these backups, take a fresh one and rehearse it**:
+  earlier rehearsals did not prove what they said.
+
+- **A secret the key ring cannot decrypt is now logged.** Every caller treats an undecryptable secret as
+  absent, so a database restored without its keys looked healthy, failed every alert, and left nothing
+  in the log while the channel editor said "check the logs". `DataProtectionSecretProtector` now logs
+  one error per distinct cause, naming the missing key (never the secret), and still throws.
+
+- **The Docker backup commands backed up an empty volume.** `docker/README.md` named the volume
+  `mt-uptime-data`, but Compose creates `mt-uptime_mt-uptime-data`, so after the quick start the
+  documented backup exited 0 and wrote an 87-byte archive holding an empty directory, and the restore
+  wrote into a volume nothing used. Both now go through the container (`--volumes-from mt-uptime`), which
+  works whatever the volume is called, and the README says to list the archive before trusting it.
+
+- **The Docker upgrade instructions did not upgrade.** `docker compose pull && docker compose up -d`
+  prints "Skipped - No image to be pulled" for a build-from-source install and leaves the old version
+  running. The documented upgrade is now `git pull && docker compose up -d --build`, which was measured
+  taking a `v0.1.0` instance to the current source with its accounts and history intact.
+
+- **`deploy-on-server.sh` refuses a build for the wrong CPU** before stopping anything, naming both
+  architectures and the fix. A first deploy of an x64 build onto an ARM box used to end with no running
+  service and nothing to roll back to. It also no longer reports "Previous build kept at publish.old" on
+  a first deploy, when there is none.
+
+- **Documentation that did not match the repository.** The deploy guide's short version ran `certbot`
+  without installing it. `CONTRIBUTING.md` and `e2e/README.md` gave `dotnet test
+  engine/Tests.E2E.MT-Uptime`, a path that exists only in the private tree (`MSB1009` in a clone of this
+  one), and stale test counts. `e2e/install-mt-uptime.sh` now unpacks the SDK outside `/tmp`, which on
+  Ubuntu 26.04 is a small RAM-backed tmpfs with per-user quotas and made `dotnet-install.sh` fail with
+  "Extraction failed".
 
 - **Anonymous account takeover.** `/auth/profile` and `/auth/password` shipped without
   `.RequireAuthorization()`. Because the login page serves an antiforgery token to anonymous visitors, an

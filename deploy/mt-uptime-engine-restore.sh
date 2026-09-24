@@ -138,37 +138,50 @@ key_id_of_payload () {
     "${b:10:2}" "${b:8:2}" "${b:14:2}" "${b:12:2}" "${b:16:4}" "${b:20:12}"
 }
 
+# Where the secrets are, and why these two tables are skipped: see list_payloads in
+# mt-uptime-engine-backup.sh. The two copies must stay identical - a backup that pairs and a rehearsal that
+# does not (or the reverse) is worse than either check alone.
+list_payloads () {
+  sqlite3 "$1" "SELECT name FROM sqlite_master WHERE type='table' AND name NOT IN ('Heartbeats','StatRollups');" \
+  | while read -r t; do
+      sqlite3 "$1" "PRAGMA table_info('$t');" | cut -d'|' -f2 | while read -r c; do
+        [ -z "$c" ] && continue
+        sqlite3 "$1" "SELECT CAST(\"$c\" AS TEXT) FROM '$t' WHERE CAST(\"$c\" AS TEXT) LIKE '%CfDJ8%';" 2>/dev/null || true
+      done
+    done \
+  | { grep -oE '^CfDJ8[A-Za-z0-9_-]+$|"CfDJ8[A-Za-z0-9_-]+"' || true; } | tr -d '"' | sort -u
+}
+
 log "proving the archived key ring can decrypt the archived secrets:"
-PAYLOADS=$(
-  sqlite3 "$DB_FILE" "SELECT name FROM sqlite_master WHERE type='table';" | while read -r t; do
-    sqlite3 "$DB_FILE" "PRAGMA table_info('$t');" | cut -d'|' -f2 | while read -r c; do
-      [ -z "$c" ] && continue
-      sqlite3 "$DB_FILE" "SELECT CAST(\"$c\" AS TEXT) FROM '$t' WHERE CAST(\"$c\" AS TEXT) LIKE 'CfDJ8%' LIMIT 5;" 2>/dev/null
-    done
-  done
-)
+PAYLOADS=$(list_payloads "$DB_FILE")
 
 SECRETS=0
 UNMATCHED=""
+KEY_USE=""
 while read -r p; do
   [ -z "$p" ] && continue
   SECRETS=$((SECRETS + 1))
   if kid=$(key_id_of_payload "$p"); then
-    if [ -f "$KEYS_FOUND/key-$kid.xml" ]; then
-      log "    secret encrypted with key $kid -> present"
-    else
-      UNMATCHED="$UNMATCHED $kid"
-      log "    secret encrypted with key $kid -> MISSING FROM THIS ARCHIVE"
-    fi
+    KEY_USE="$KEY_USE$kid"$'\n'
+    [ -f "$KEYS_FOUND/key-$kid.xml" ] || UNMATCHED="$UNMATCHED $kid"
   else
     UNMATCHED="$UNMATCHED (unparseable)"
   fi
 done <<< "$PAYLOADS"
+# Several secrets can share one missing key; name each key once.
+UNMATCHED=$(printf '%s\n' $UNMATCHED | sort -u | xargs)
+[ -z "$KEY_USE" ] || printf '%s' "$KEY_USE" | sort | uniq -c | while read -r n kid; do
+  if [ -f "$KEYS_FOUND/key-$kid.xml" ]; then
+    log "    $n secret(s) encrypted with key $kid -> present"
+  else
+    log "    $n secret(s) encrypted with key $kid -> MISSING FROM THIS ARCHIVE"
+  fi
+done
 
 if [ "$SECRETS" -eq 0 ]; then
   log "    no encrypted secrets in this backup (normal for a fresh instance)"
 elif [ -n "$UNMATCHED" ]; then
-  die "this archive's key ring cannot decrypt its own data:$UNMATCHED. Restoring it would produce an instance that starts, looks healthy, and cannot send a single notification."
+  die "this archive's key ring cannot decrypt its own data: $UNMATCHED. Restoring it would produce an instance that starts, looks healthy, and cannot send a single notification."
 else
   log "    all $SECRETS secret(s) pair with a key in this archive"
 fi

@@ -107,7 +107,8 @@ covers this, bind-mount permissions, and backups.
 
 ### From source
 
-Requires a **.NET 10 SDK**, 10.0.302 or newer — `global.json` sets that floor.
+Requires a **.NET 10 SDK** — any 10.0 release, so Ubuntu's own `sudo apt install dotnet-sdk-10.0`
+will do. `global.json` sets that floor at 10.0.100.
 
 ```bash
 git clone https://github.com/Melsson-Technology/mt-uptime-selfhost.git
@@ -136,7 +137,7 @@ See **[deploy/README-deploy.md](deploy/README-deploy.md)** for a full walkthroug
 reverse proxy, Let's Encrypt, and the provisioning script.
 
 ```bash
-./scripts/build-and-package.sh    # produces build/mt-uptime.tar.gz
+./scripts/build-and-package.sh    # produces build/mt-uptime.tar.gz; add --arch arm64 for an ARM server
 # copy to the server, then:
 sudo ./deploy/deploy-on-server.sh mt-uptime.tar.gz
 ```
