@@ -71,6 +71,17 @@ cd mt-uptime-selfhost/docker
 docker compose up -d
 ```
 
+**On a 1 GB host, add swap before that first build.** Compiling is the one memory-hungry step — the
+running container sits at about 85 MB — and on a 1 GB VM with no swap the build was measured
+bottoming out at 23–56 MB free. It finished, but with no margin: anything else busy on the box at the
+same moment can get the build killed. Give it swap to fall back on first:
+
+```bash
+sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile
+sudo mkswap /swapfile && sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab    # keeps it across reboots
+```
+
 When images are published this will become a pull, and the change will be one line in
 `docker-compose.yml`. Until then, treat any `mt-uptime:latest` reference you find as aspirational.
 

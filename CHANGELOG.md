@@ -68,6 +68,10 @@ versioning will follow [Semantic Versioning](https://semver.org/) from 1.0.0 onw
   `Logging__LogLevel__Microsoft.EntityFrameworkCore.Database.Command=Information` in the environment.
   `docker-compose.yml` now also caps the container log at three 10 MB files.
 
+- **`docker/README.md` says to add swap before the first build on a 1 GB host.** The running
+  container needs about 85 MB, but compiling the image on a 1 GB VM without swap was measured at
+  23–56 MB free at its low point: it finished, with no margin for anything else on the box.
+
 - **Any .NET 10 SDK builds it.** `global.json` asked for 10.0.302, which no distribution packages:
   Ubuntu 24.04 and 26.04 both ship `dotnet-sdk-10.0` 10.0.112, which stopped at "A compatible .NET SDK
   was not found". The floor is now 10.0.100 (still `latestFeature`, so a newer SDK is used when present).
